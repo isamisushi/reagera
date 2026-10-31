@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["reagera", "examples/todo", "examples/latency", "examples/checkout"]
+members = ["reagera", "examples/todo", "examples/latency", "examples/checkout", "examples/compare"]
 
 [workspace.package]
 edition = "2021"

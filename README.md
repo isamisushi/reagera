@@ -249,6 +249,9 @@ python3 -m http.server 8080 --directory www
 
 Open http://localhost:8080/. Run the tests with `cargo test --workspace`.
 
+- Compare: the same todo app in React 18 and in Reagera, side by side. A script bar sends
+  the same action to both. Under each app, a panel shows what its framework keeps: React
+  keeps the latest reducer result, Reagera keeps the log, the fold, and a head to move.
 - Todo: the classic app. The session lives in the URL hash, so the URL is the bug report.
 - Latency lab: two clients, delayed delivery with jitter. A late record gets an orange
   ring. Both clients agree as soon as nothing is in flight.

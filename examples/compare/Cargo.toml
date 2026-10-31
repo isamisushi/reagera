@@ -1,0 +1,13 @@
+[package]
+name = "reagera-example-compare"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+reagera = { path = "../../reagera" }
+wasm-bindgen.workspace = true
+web-sys = { workspace = true, features = ["Window", "Location", "History"] }

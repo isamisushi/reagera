@@ -94,7 +94,7 @@ macro_rules! tags {
     };
 }
 
-tags! { div span p h1 h2 h3 ul ol li button input textarea form label main header footer section nav em strong a pre code svg circle g table tr td th select option small }
+tags! { div span p h1 h2 h3 h4 ul ol li button input textarea form label main header footer section nav em strong a pre code svg circle g table tr td th select option small }
 
 impl<M: 'static> Element<M> {
     /// Set an attribute.
@@ -233,6 +233,40 @@ impl<M> Html<M> {
                 out.push_str(e.tag);
                 out.push('>');
             }
+        }
+    }
+
+    /// Wrap every message this tree can produce, so a view of one message type
+    /// can sit inside a view of another. `f` is shared by all listeners.
+    pub fn map<N: 'static>(self, f: impl Fn(M) -> N + 'static) -> Html<N>
+    where
+        M: 'static,
+    {
+        self.map_rc(Rc::new(f))
+    }
+
+    fn map_rc<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> Html<N>
+    where
+        M: 'static,
+    {
+        match self {
+            Html::Text(t) => Html::Text(t),
+            Html::Element(e) => Html::Element(Element {
+                tag: e.tag,
+                key: e.key,
+                attrs: e.attrs,
+                props: e.props,
+                listeners: e
+                    .listeners
+                    .into_iter()
+                    .map(|l| {
+                        let f = f.clone();
+                        let handler = l.handler;
+                        Listener { event: l.event, handler: Rc::new(move |ev| handler(ev).map(|m| f(m))), prevent_default: l.prevent_default }
+                    })
+                    .collect(),
+                children: e.children.into_iter().map(|c| c.map_rc(f.clone())).collect(),
+            }),
         }
     }
 

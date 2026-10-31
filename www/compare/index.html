@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>React and Reagera, side by side</title>
+<style>
+  :root { --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --react: #0ea5e9; --reagera: #f97316; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f3f4f6; color: var(--ink); }
+  main { max-width: 1040px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-weight: 600; margin: 0 0 4px; }
+  .hint { color: var(--muted); font-size: 14px; margin: 0 0 12px; }
+  .script { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 20px; padding: 10px 12px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.08); font-size: 14px; }
+  .script strong { margin-right: 4px; }
+  .script button { font: inherit; padding: 4px 10px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; }
+  .script button.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 820px) { .columns { grid-template-columns: 1fr; } }
+  .column > h2 { margin: 0 0 8px; font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .column > h2 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  #react h2 .dot { background: var(--react); }
+  #reagera-column h2 .dot { background: var(--reagera); }
+
+  .app { background: #fff; padding: 12px 16px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  .app > input { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
+  .app > input[disabled] { background: #fef3c7; }
+  .list { list-style: none; padding: 0; margin: 10px 0; min-height: 24px; }
+  .list li { display: flex; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid #f3f4f6; }
+  .list li span { flex: 1; }
+  .list li.done span { text-decoration: line-through; color: #9ca3af; }
+  .x { border: 0; background: none; color: #9ca3af; cursor: pointer; font-size: 18px; }
+  .app footer { display: flex; gap: 6px; align-items: center; font-size: 14px; color: var(--muted); }
+  .app footer span { margin-right: auto; }
+  .app footer button { font: inherit; border: 1px solid #d1d5db; background: none; cursor: pointer; border-radius: 4px; padding: 2px 6px; }
+
+  .inside { margin-top: 12px; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 12px 14px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .inside h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #9ca3af; }
+  .inside section { border-top: 1px solid #374151; padding: 10px 0; }
+  .inside h4 { margin: 0 0 4px; font-size: 13px; color: #f9fafb; }
+  .inside .note { margin: 0 0 8px; color: #9ca3af; }
+  .inside .none { color: #fbbf24; }
+  .inside pre.state { margin: 0; padding: 8px; background: #1f2937; border-radius: 6px; white-space: pre-wrap; overflow-x: auto; }
+  .inside table.log { width: 100%; border-collapse: collapse; }
+  .inside table.log th { text-align: left; color: #9ca3af; font-weight: normal; padding: 2px 6px 2px 0; }
+  .inside table.log td { padding: 2px 6px 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+  .inside table.log tr { cursor: pointer; }
+  .inside table.log tr.past { color: #e5e7eb; }
+  .inside table.log tr.head { color: #fbbf24; background: #292524; }
+  .inside table.log tr.future { opacity: .35; }
+  .inside .position { padding: 4px 8px; border-radius: 4px; margin-bottom: 6px; }
+  .inside .position.live { background: #064e3b; color: #6ee7b7; }
+  .inside .position.past { background: #78350f; color: #fde68a; }
+  .inside input[type=range] { width: 100%; }
+  .inside input[type=range][disabled] { opacity: .3; }
+  .inside .row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .inside button { font: inherit; padding: 2px 8px; border: 1px solid #4b5563; border-radius: 4px; background: #1f2937; color: #e5e7eb; cursor: pointer; }
+  .inside button[disabled] { opacity: .35; cursor: not-allowed; }
+  .inside textarea { width: 100%; box-sizing: border-box; font: inherit; background: #1f2937; color: #e5e7eb; border: 1px solid #374151; border-radius: 4px; margin-top: 6px; }
+  .inside a { color: #93c5fd; }
+  .inside .renders { color: #9ca3af; }
+</style>
+</head>
+<body>
+<main>
+  <h1>React and Reagera, side by side</h1>
+  <p class="hint">The same todo app, written twice. The reducer is the same function in both. Under each app is what its framework keeps between clicks.</p>
+
+  <div class="script">
+    <strong>send the same action to both:</strong>
+    <button data-action="add">add a todo</button>
+    <button data-action="toggle-first">toggle the first</button>
+    <button data-action="remove-first">remove the first</button>
+    <button data-action="clear-done">clear done</button>
+    <button class="primary" id="play">play 6 steps, then scrub the Reagera timeline</button>
+  </div>
+
+  <div class="columns">
+    <div class="column" id="react">
+      <h2><span class="dot"></span>React 18, useReducer</h2>
+      <div id="react-root"></div>
+    </div>
+    <div class="column" id="reagera-column">
+      <h2><span class="dot"></span>Reagera, the same reducer as <code>apply</code></h2>
+      <div id="reagera"></div>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script>
+  // ----- the React half -------------------------------------------------------
+  const h = React.createElement;
+
+  // The same rules as `apply` in examples/compare/src/lib.rs. React keeps only
+  // the value this function returns. The action is gone once it has run.
+  let nextId = 1;
+  let lastState = null; // a copy for the script bar: React itself gives the page no way to read it
+  function reducer(state, action) {
+    return (lastState = reduce(state, action));
+  }
+  function reduce(state, action) {
+    switch (action.type) {
+      case "add": {
+        return { todos: [...state.todos, { id: nextId++, title: action.title, done: false }], adds: state.adds + 1 };
+      }
+      case "toggle": {
+        return { ...state, todos: state.todos.map(t => t.id === action.id ? { ...t, done: !t.done } : t) };
+      }
+      case "remove": {
+        return { ...state, todos: state.todos.filter(t => t.id !== action.id) };
+      }
+      case "clear-done": {
+        return { ...state, todos: state.todos.filter(t => !t.done) };
+      }
+      default: return state;
+    }
+  }
+  const initial = { todos: [], adds: 0 };
+
+  function stateText(s) {
+    const rows = s.todos.map(t => `    { id: ${t.id}, title: ${JSON.stringify(t.title)}, done: ${t.done} },`).join("\n");
+    return `{\n  todos: [\n${rows}${rows ? "\n" : ""}  ],\n  adds: ${s.adds},\n}`;
+  }
+
+  let reactDispatch = () => {};
+  let renders = 0;
+
+  function TodoApp() {
+    const [state, dispatch] = React.useReducer(reducer, initial);
+    const [exported, setExported] = React.useState(null);
+    reactDispatch = dispatch;
+    renders += 1;
+    const left = state.todos.filter(t => !t.done).length;
+
+    const app = h("div", { className: "app" },
+      h("input", {
+        key: state.adds, placeholder: "What needs to be done?", autoComplete: "off",
+        onKeyDown: e => { const title = e.target.value.trim(); if (e.key === "Enter" && title) dispatch({ type: "add", title }); },
+      }),
+      h("ul", { className: "list" }, state.todos.map(t =>
+        h("li", { key: t.id, className: t.done ? "done" : "" },
+          h("input", { type: "checkbox", checked: t.done, onChange: () => dispatch({ type: "toggle", id: t.id }) }),
+          h("span", null, t.title),
+          h("button", { className: "x", onClick: () => dispatch({ type: "remove", id: t.id }) }, "×")))),
+      h("footer", null, h("span", null, `${left} left`), h("button", { onClick: () => dispatch({ type: "clear-done" }) }, "clear done")));
+
+    const inside = h("div", { className: "inside" },
+      h("h3", null, "what React keeps"),
+      h("section", null,
+        h("h4", null, "1. the log: none"),
+        h("p", { className: "note" }, "An action is passed to the reducer, used once, and dropped. React does not remember that it happened."),
+        h("p", { className: "none" }, `${renders} renders so far. The actions that caused them are gone.`)),
+      h("section", null,
+        h("h4", null, "2. the state: the latest reducer result"),
+        h("p", { className: "note" }, "This object is stored as is. Each action overwrites it. The previous object is garbage."),
+        h("pre", { className: "state" }, stateText(state))),
+      h("section", null,
+        h("h4", null, "3. time travel: not possible"),
+        h("p", { className: "note" }, "Nothing to scrub. To get this, you add code that records every action yourself, for example Redux with its devtools."),
+        h("div", { className: "position past" }, "only now"),
+        h("input", { type: "range", disabled: true, min: 0, max: 1, defaultValue: 1 }),
+        h("div", { className: "row" },
+          h("button", { disabled: true }, "⟵ step back"), h("button", { disabled: true }, "step forward ⟶"),
+          h("button", { disabled: true }, "replay from the start"), h("button", { disabled: true }, "live"))),
+      h("section", null,
+        h("h4", null, "4. the session: a snapshot, if you write one"),
+        h("p", { className: "note" }, "You can serialize the current state yourself. Reload this page: this side starts empty. A snapshot shows where you ended, not how you got there."),
+        h("div", { className: "row" }, h("button", { onClick: () => setExported(JSON.stringify(state)) }, "export")),
+        exported && h("div", null,
+          h("p", { className: "note" }, `${exported.length} characters of JSON for the final state only`),
+          h("textarea", { readOnly: true, rows: 3, value: exported }))));
+
+    return h("div", null, app, inside);
+  }
+
+  ReactDOM.createRoot(document.getElementById("react-root")).render(h(TodoApp));
+
+  // The script bar resolves "first" on the React side here, because React ids
+  // are a counter and Reagera ids are record hashes. Both halves see the same
+  // action.
+  function reactScript(action, arg) {
+    const first = (lastState || initial).todos[0];
+    switch (action) {
+      case "add": reactDispatch({ type: "add", title: arg }); break;
+      case "toggle-first": if (first) reactDispatch({ type: "toggle", id: first.id }); break;
+      case "remove-first": if (first) reactDispatch({ type: "remove", id: first.id }); break;
+      case "clear-done": reactDispatch({ type: "clear-done" }); break;
+    }
+  }
+</script>
+
+<script type="module">
+  import init, { script } from "/pkg/compare/reagera_example_compare.js";
+  await init();
+
+  const words = ["milk", "eggs", "bread", "coffee", "write the framework", "ship it", "call mum", "water the plants"];
+  let w = 0;
+  function send(action) {
+    const arg = action === "add" ? words[w++ % words.length] : "";
+    reactScript(action, arg);
+    script(action, arg);
+  }
+  for (const b of document.querySelectorAll(".script button[data-action]")) {
+    b.addEventListener("click", () => send(b.dataset.action));
+  }
+  const play = document.getElementById("play");
+  play.addEventListener("click", async () => {
+    play.disabled = true;
+    const steps = ["add", "add", "toggle-first", "add", "remove-first", "clear-done"];
+    for (const s of steps) {
+      send(s);
+      await new Promise(r => setTimeout(r, 500));
+    }
+    play.disabled = false;
+  });
+</script>
+</body>
+</html>

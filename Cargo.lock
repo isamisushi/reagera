@@ -170,6 +170,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "reagera-example-compare"
+version = "0.0.0"
+dependencies = [
+ "reagera",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "reagera-example-latency"
 version = "0.0.0"
 dependencies = [
