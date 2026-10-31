@@ -345,3 +345,20 @@ fn reply_bytes_are_explicit() {
     assert_eq!(back, r);
     assert_eq!(format!("{:?}", r.body()), "reply #00000000 Charge(3) = Charged(4)");
 }
+
+#[test]
+fn batch_replays_replies_and_pending_requests_in_log_order() {
+    let mut source = shop("a", 1000);
+    source.dispatch(Msg::Add(450)).unwrap();
+    source.dispatch(Msg::Pay).unwrap();
+    let request = source.pending()[0].id;
+    source.reply(request, Outcome::Charged(123)).unwrap();
+    let records = source.events();
+    let mut target = shop("b", 1000);
+    assert_eq!(target.receive_batch(records.into_iter().rev()), 3);
+    assert_eq!(target.state(), source.state());
+    assert_eq!(target.pending(), source.pending());
+    assert_eq!(target.pending_at(1010), source.pending_at(1010));
+    assert_eq!(target.export(), source.export());
+    assert!(target.take_rejections().is_empty());
+}

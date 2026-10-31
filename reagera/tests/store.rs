@@ -368,3 +368,33 @@ fn a_session_larger_than_one_mebibyte_round_trips() {
     assert_eq!(copy.len(), 3000);
     assert_eq!(copy.events(), s.events());
 }
+
+#[test]
+fn batch_receive_preserves_order_history_and_head() {
+    let records: Vec<_> = (0..2048).map(|i| {
+        let event = if i % 17 == 0 { Msg::Reset } else { Msg::Add(i) };
+        Record::new(1000 + i / 3, "source", i as u32, Body::Event(event))
+    }).collect();
+    let mut reference = store("reference", 0, 1);
+    for record in &records {
+        reference.receive(record.clone());
+    }
+    let mut batch = store("batch", 0, 1);
+    batch.receive(records.last().unwrap().clone());
+    batch.backtrack(1200);
+    assert_eq!(batch.receive_batch(records.iter().rev().cloned().chain(records.iter().cloned())), records.len() - 1);
+    assert!(!batch.live());
+    assert_eq!(batch.head_ms(), 1200);
+    assert_eq!(batch.state(), &reference.state_at(1200));
+    assert_eq!(batch.len(), records.len());
+    assert_eq!(batch.receive_batch(Vec::new()), 0);
+    assert_eq!(batch.receive_batch(records), 0);
+    for ms in [999, 1000, 1200, 1400, 1682, 2000] {
+        assert_eq!(batch.state_at(ms), reference.state_at(ms));
+    }
+    batch.go_live();
+    assert_eq!(batch.state(), reference.state());
+    assert_eq!(batch.export(), reference.export());
+    assert!(batch.take_rejections().is_empty());
+    assert_eq!(batch.engine_status().pending, 0);
+}

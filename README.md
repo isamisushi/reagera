@@ -215,6 +215,36 @@ the text. In a test, call `Store::import_text` and assert on `store.state()` or
 `store.state_at(ms)`. The answers from the outside world are in the session, so the test
 needs no network and no fake server.
 
+## Bulk receive
+
+Use `store.receive_batch(records)` when a transport delivers several records together.
+The method returns the number of new records and ignores duplicate IDs.
+ConTime processes the records together, and the store refreshes its displayed state once.
+The method preserves the current head, including when it points into the past.
+Session import uses the same batch path.
+
+Processing remains synchronous on the calling thread.
+A large batch can still block the browser until processing ends.
+
+## Measure history performance
+
+Run the benchmark from the repository root:
+
+```sh
+cargo bench -p reagera --bench history
+REAGERA_BENCH_EVENTS=20000 cargo bench -p reagera --bench history
+```
+
+The benchmark compares individual and batch receipt in chronological and reverse order.
+Reverse order models repeated late delivery and forces reconstruction of later states.
+An order-sensitive calculation makes sure that each result matches chronological replay.
+The benchmark also measures export, import, and 1,000 queries for past states.
+Input construction and input cloning occur outside the receive measurements.
+
+These are single-run native timings under the repository release configuration.
+They do not measure browser rendering or frame latency.
+Repeat the command to assess timing variation.
+
 ## Time travel
 
 ```rust
@@ -255,6 +285,8 @@ Open http://localhost:8080/. Run the tests with `cargo test --workspace`.
 - Todo: the classic app. The session lives in the URL hash, so the URL is the bug report.
 - Latency lab: two clients, delayed delivery with jitter. A late record gets an orange
   ring. Both clients agree as soon as nothing is in flight.
+  Compare individual and batch receipt of 1,000 late records in the browser.
+  The panel reports timings and makes sure that states and exported bytes match.
 - Checkout: a slow payment gateway that declines three times in ten. Press pay twice:
   one charge. Import the session in a new tab: the same receipts, and no call to the gateway.
 

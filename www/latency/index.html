@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reagera latency lab</title>
+<link rel="icon" href="data:,">
 <style>
   body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f3f4f6; color: #111827; }
   main { max-width: 760px; margin: 24px auto; padding: 0 16px; }
@@ -26,6 +27,14 @@
   .log { font: 11px/1.5 ui-monospace, Menlo, monospace; padding-left: 20px; margin: 8px 0 0; color: #374151; }
   .log .late { color: #b45309; }
   .log .future { opacity: .4; }
+  .comparison { margin-top: 24px; padding: 20px; background: white; border: 1px solid #e5e7eb; border-radius: 10px; }
+  .comparison h2 { margin: 0; font-size: 20px; }
+  .comparison button { font: inherit; padding: 8px 14px; background: #1d4ed8; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 16px 0; }
+  .metrics > div { padding: 12px; background: #f3f4f6; border-radius: 6px; }
+  .metrics h3 { margin: 0; font-size: 13px; font-weight: 500; }
+  .metrics p { margin: 8px 0 0; font-size: 24px; font-variant-numeric: tabular-nums; }
+  @media (max-width: 480px) { .metrics { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>

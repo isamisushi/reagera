@@ -20,3 +20,7 @@ web-sys = { workspace = true, features = [
   "HtmlSelectElement", "Node", "NodeList", "Text", "Event", "EventTarget", "MouseEvent",
   "KeyboardEvent", "CssStyleDeclaration", "Location", "History", "DomRect", "Storage", "console",
 ] }
+
+[[bench]]
+name = "history"
+harness = false

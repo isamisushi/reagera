@@ -61,6 +61,52 @@ impl App for Arena {
     }
 }
 
+// The comparison uses separate stores so the live session stays intact.
+#[cfg(any(target_arch = "wasm32", test))]
+struct Comparison {
+    individual_ms: f64,
+    batch_ms: f64,
+    import_ms: f64,
+    bytes: usize,
+    equal: bool,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn compare_delivery(mut now: impl FnMut() -> f64) -> Comparison {
+    use reagera::{Body, Options, Record, Store};
+    let records: Vec<_> = (0..1000).map(|i| {
+        let body = if i % 50 == 0 { Msg::Clear } else {
+            Msg::Place { x: (i * 37 % 320) as u16, y: (i * 19 % 220) as u16 }
+        };
+        Record::new(1000 + i as i64, "sample", i, Body::Event(body))
+    }).collect();
+    let options = || Options::default().origin("comparison").clock(|| 0);
+    let mut reference = Store::<Arena>::new(options());
+    for record in &records { reference.receive(record.clone()); }
+    let input: Vec<_> = records.iter().rev().cloned().collect();
+    let mut individual = Store::<Arena>::new(options());
+    let start = now();
+    for record in input { individual.receive(record); }
+    let individual_ms = now() - start;
+    let input: Vec<_> = records.into_iter().rev().collect();
+    let mut batch = Store::<Arena>::new(options());
+    let start = now();
+    batch.receive_batch(input);
+    let batch_ms = now() - start;
+    let bytes = batch.export();
+    let start = now();
+    let mut imported = Store::<Arena>::import(&bytes, options()).expect("valid demo session");
+    let import_ms = now() - start;
+    let mut equal = individual.state() == reference.state() && batch.state() == reference.state()
+        && imported.state() == reference.state() && individual.export() == bytes && reference.export() == bytes;
+    for ms in [999, 1000, 1249, 1500, 1999] {
+        let expected = reference.state_at(ms);
+        equal &= individual.state_at(ms) == expected && batch.state_at(ms) == expected && imported.state_at(ms) == expected;
+    }
+    equal &= individual.take_rejections().is_empty() && batch.take_rejections().is_empty();
+    Comparison { individual_ms, batch_ms, import_ms, bytes: bytes.len(), equal }
+}
+
 // ----- the simulation (not part of any log) ------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -110,6 +156,8 @@ mod lab {
         Latency(i64),
         Jitter(i64),
         ToggleBot,
+        ToggleBatch,
+        Compare,
         DeliverAll,
         Clear,
         Scrub(i64),
@@ -132,6 +180,8 @@ mod lab {
         latency: i64,
         jitter: i64,
         bot: bool,
+        batch: bool,
+        comparison: Option<Comparison>,
         scrub: Option<i64>,
         t0: i64,
         rng: u64,
@@ -167,12 +217,25 @@ mod lab {
                 ready
             };
             let any = !ready.is_empty();
+            let mut alice = Vec::new();
+            let mut bob = Vec::new();
             for m in ready {
                 let is_late = m.record.ms() < self.store(m.to).latest_ms();
                 if is_late {
                     self.late.push((m.to, m.record.id()));
                 }
-                self.store(m.to).receive(m.record);
+                if self.batch {
+                    match m.to {
+                        Client::Alice => alice.push(m.record),
+                        Client::Bob => bob.push(m.record),
+                    }
+                } else {
+                    self.store(m.to).receive(m.record);
+                }
+            }
+            if self.batch {
+                self.alice.receive_batch(alice);
+                self.bob.receive_batch(bob);
             }
             any
         }
@@ -183,6 +246,11 @@ mod lab {
                 LabMsg::Latency(v) => self.latency = v,
                 LabMsg::Jitter(v) => self.jitter = v,
                 LabMsg::ToggleBot => self.bot = !self.bot,
+                LabMsg::ToggleBatch => self.batch = !self.batch,
+                LabMsg::Compare => {
+                    let performance = web_sys::window().unwrap().performance().expect("browser performance clock");
+                    self.comparison = Some(compare_delivery(|| performance.now()));
+                }
                 LabMsg::DeliverAll => {
                     for m in &mut self.in_flight {
                         m.due_ms = 0;
@@ -281,6 +349,7 @@ mod lab {
                         .child(slider("latency", self.latency, LabMsg::Latency))
                         .child(slider("jitter", self.jitter, LabMsg::Jitter))
                         .child(label().child(input().attr("type", "checkbox").checked(self.bot).on("change", |_| Some(LabMsg::ToggleBot))).text(" bob clicks on his own"))
+                        .child(label().child(input().attr("type", "checkbox").checked(self.batch).on("change", |_| Some(LabMsg::ToggleBatch))).text(" batch arrivals per client every 50 ms"))
                         .child(button().on_click(LabMsg::DeliverAll).text("deliver everything now"))
                         .child(button().on_click(LabMsg::Clear).text("clear (as alice)"))
                         .child(button().on_click(LabMsg::ShareUrl).text("put session in URL")),
@@ -309,6 +378,26 @@ mod lab {
                         .child(button().on_click(LabMsg::Live).text("live")),
                 )
                 .child(div().class("clients").child(alice).child(bob))
+                .child(
+                    section().class("comparison")
+                        .child(h2().text("One history, two delivery methods"))
+                        .child(p().text("Deliver the same 1,000 records newest first, individually and in one batch. A clear event every 50 records makes order matter."))
+                        .child(button().on_click(LabMsg::Compare).text(if self.comparison.is_some() { "Run comparison again" } else { "Compare 1,000 late records" }))
+                        .child(p().class("hint").text("Uses separate stores. Your arenas stay unchanged. This synchronous test can briefly pause the page."))
+                        .child_if(self.comparison.is_some(), || {
+                            let result = self.comparison.as_ref().unwrap();
+                            div().attr("aria-live", "polite")
+                                .child(div().class("metrics")
+                                    .child(div().child(h3().text("Individual receive")).child(p().text(format!("{:.2} ms", result.individual_ms))))
+                                    .child(div().child(h3().text("Batch receive")).child(p().text(format!("{:.2} ms", result.batch_ms))))
+                                    .child(div().child(h3().text("Session import")).child(p().text(format!("{:.2} ms", result.import_ms)))))
+                                .child(p().class(if result.equal { "status ok" } else { "status pending" }).text(if result.equal {
+                                    "Match: final state, five past states, and exported bytes. Import restores the same states."
+                                } else { "Mismatch detected. The delivery methods did not reproduce the reference history." }))
+                                .child(p().class("hint").text(format!("{} bytes encoded with minbin. Times exclude input creation, copying, rendering, and result comparison. Single browser run; repeat to compare variation.", result.bytes)))
+                                .build()
+                        })
+                )
                 .child(p().class("hint").text(format!(
                     "reference store: {} events, {} bytes exported. Every record is a minbin-encoded ConTime event. Each arena shows state rebuilt by ConTime, and the scrubber queries it at that time without moving the head.",
                     self.reference.len(),
@@ -334,10 +423,9 @@ mod lab {
         };
         let mut alice = Store::<Arena>::new(Options::default().origin("alice"));
         let mut bob = Store::<Arena>::new(Options::default().origin("bob"));
-        for r in reference.events() {
-            alice.receive(r.clone());
-            bob.receive(r);
-        }
+        let records = reference.events();
+        alice.receive_batch(records.iter().cloned());
+        bob.receive_batch(records);
         let t0 = if reference.is_empty() { now_ms() } else { reference.earliest_ms() };
         let lab = Rc::new(RefCell::new(Lab {
             alice,
@@ -348,6 +436,8 @@ mod lab {
             latency: 800,
             jitter: 800,
             bot: true,
+            batch: true,
+            comparison: None,
             scrub: None,
             t0,
             rng: (now_ms() as u64) | 1,
@@ -442,6 +532,15 @@ mod tests {
         bob.receive(a2); // newest first
         bob.receive(a1);
         assert_eq!(alice.state(), bob.state());
+    }
+
+    #[test]
+    fn comparison_reproduces_history_and_session() {
+        let mut time = 0.0;
+        let result = compare_delivery(|| { time += 1.0; time });
+        assert!(result.equal);
+        assert!(result.bytes > 0);
+        assert_eq!((result.individual_ms, result.batch_ms, result.import_ms), (1.0, 1.0, 1.0));
     }
 
     #[test]

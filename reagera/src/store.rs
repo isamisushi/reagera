@@ -331,6 +331,18 @@ impl<A: App> Store<A> {
         true
     }
 
+    /// Insert records together and rebuild the displayed state once.
+    /// Returns the number of new records. Duplicate IDs are ignored.
+    /// The head stays at its current mode and time, including while viewing the past.
+    /// Processing completes on the calling thread before this method returns.
+    pub fn receive_batch(&mut self, records: impl IntoIterator<Item = Rec<A>>) -> usize {
+        let count = self.insert_batch(records);
+        if count > 0 {
+            self.refresh();
+        }
+        count
+    }
+
     /// Show the state as of `ms`. Nothing is deleted.
     pub fn backtrack(&mut self, ms: i64) {
         self.head_ms = Some(ms);
@@ -368,12 +380,12 @@ impl<A: App> Store<A> {
             return Err(StoreError::BadSession(format!("session is for app {:?}, not {:?}", session.name, A::NAME)));
         }
         let mut store = Self::new(options);
-        for record in session.records {
+        for record in &session.records {
             if record.origin() == store.origin && record.seq() >= store.seq {
                 store.seq = record.seq() + 1;
             }
-            store.insert(record);
         }
+        store.insert_batch(session.records);
         store.head_ms = if session.live { None } else { Some(session.head_ms) };
         store.refresh();
         Ok(store)
@@ -409,16 +421,27 @@ impl<A: App> Store<A> {
     }
 
     fn insert(&mut self, record: Rec<A>) -> bool {
-        if !self.ids.insert(record.id()) {
-            return false;
+        self.insert_batch([record]) > 0
+    }
+
+    fn insert_batch(&mut self, records: impl IntoIterator<Item = Rec<A>>) -> usize {
+        let mut batch = Vec::new();
+        for record in records {
+            if !self.ids.insert(record.id()) {
+                continue;
+            }
+            let tick = record.tick();
+            self.earliest = Some(self.earliest.map_or(tick, |e| e.min(tick)));
+            self.latest = Some(self.latest.map_or(tick, |l| l.max(tick)));
+            batch.push(record);
         }
-        let tick = record.tick();
-        self.earliest = Some(self.earliest.map_or(tick, |e| e.min(tick)));
-        self.latest = Some(self.latest.map_or(tick, |l| l.max(tick)));
-        self.engine.apply([record]).expect("manual queue has room");
-        self.engine.advance_to(self.latest.unwrap_or_default()).expect("manual queue has room");
-        self.drain();
-        true
+        let count = batch.len();
+        if count > 0 {
+            self.engine.apply(batch).expect("manual queue has room");
+            self.engine.advance_to(self.latest.unwrap_or_default()).expect("manual queue has room");
+            self.drain();
+        }
+        count
     }
 
     fn drain(&mut self) {

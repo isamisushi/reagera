@@ -11,4 +11,4 @@ crate-type = ["cdylib", "rlib"]
 reagera = { path = "../../reagera" }
 wasm-bindgen.workspace = true
 js-sys.workspace = true
-web-sys = { workspace = true, features = ["Window", "Document", "Element", "Location", "History"] }
+web-sys = { workspace = true, features = ["Window", "Document", "Element", "Location", "History", "Performance"] }
