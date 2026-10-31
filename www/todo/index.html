@@ -8,7 +8,7 @@
   body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: #f3f4f6; color: #111827; }
   .app { max-width: 480px; margin: 40px auto; background: #fff; padding: 16px 24px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
   h1 { margin: 0 0 12px; font-weight: 600; }
-  form input { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
+  .app > input { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
   .list { list-style: none; padding: 0; margin: 12px 0; }
   .list li { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid #f3f4f6; }
   .list li span { flex: 1; }
@@ -22,6 +22,9 @@
 </head>
 <body>
 <div id="root"></div>
-<script type="module" src="/dist/examples/todo/app.js"></script>
+<script type="module">
+  import init from "/pkg/todo/reagera_example_todo.js";
+  init();
+</script>
 </body>
 </html>

@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["reagera", "examples/todo", "examples/latency"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/isamisushi/reagera"
+
+[workspace.dependencies]
+# contime 0.1.1 on crates.io does not expose the `manual` feature yet, so a git
+# revision is pinned. Manual processing is what lets ConTime run on the browser
+# main thread without threads.
+contime = { git = "https://github.com/humacss/contime", rev = "4847735dfb4dbc5b4f9dcb78ce82d5c2d97ba54e", default-features = false, features = ["manual", "time"] }
+minbin = "1.0"
+wasm-bindgen = "0.2.130"
+js-sys = "0.3"
+web-sys = "0.3"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
