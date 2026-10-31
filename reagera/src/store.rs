@@ -121,6 +121,8 @@ pub enum StoreError {
     NotLive,
     /// No request with this ID waits for an answer.
     UnknownEffect(u128),
+    /// The record does not fit the wire format: a string over 100 KiB or a record over 1 MiB.
+    TooLarge(String),
 }
 
 impl fmt::Display for StoreError {
@@ -129,6 +131,7 @@ impl fmt::Display for StoreError {
             Self::BadSession(m) => write!(f, "bad session: {m}"),
             Self::NotLive => write!(f, "the head is in the past; go live before dispatching"),
             Self::UnknownEffect(id) => write!(f, "no pending request #{}", crate::effect::short(*id)),
+            Self::TooLarge(m) => write!(f, "record does not fit the wire format: {m}"),
         }
     }
 }
@@ -297,11 +300,12 @@ impl<A: App> Store<A> {
             return Err(StoreError::NotLive);
         }
         let ms = self.next_ms();
-        Ok(self.dispatch_at(event, ms))
+        self.dispatch_at(event, ms)
     }
 
     /// Record an event at an explicit millisecond, regardless of the head and the clock.
-    pub fn dispatch_at(&mut self, event: A::Event, ms: i64) -> Rec<A> {
+    /// Fails with [`StoreError::TooLarge`] when the event does not fit the wire format.
+    pub fn dispatch_at(&mut self, event: A::Event, ms: i64) -> Result<Rec<A>, StoreError> {
         self.record(Body::Event(event), ms)
     }
 
@@ -314,7 +318,7 @@ impl<A: App> Store<A> {
     pub fn reply(&mut self, effect: u128, outcome: A::Outcome) -> Result<Rec<A>, StoreError> {
         let request = self.pending_live().into_iter().find(|p| p.id == effect).ok_or(StoreError::UnknownEffect(effect))?.request;
         let ms = self.next_ms();
-        Ok(self.record(Body::Reply { effect, request, outcome }, ms))
+        self.record(Body::Reply { effect, request, outcome }, ms)
     }
 
     /// Insert a record made elsewhere. Returns false when its ID is already known.
@@ -395,12 +399,13 @@ impl<A: App> Store<A> {
         ms
     }
 
-    fn record(&mut self, body: Body<A::Event, A::Effect, A::Outcome>, ms: i64) -> Rec<A> {
-        let record = Rec::<A>::new(ms, self.origin.clone(), self.seq, body);
+    /// Nothing changes, not even the sequence number, when the body does not fit.
+    fn record(&mut self, body: Body<A::Event, A::Effect, A::Outcome>, ms: i64) -> Result<Rec<A>, StoreError> {
+        let record = Rec::<A>::try_new(ms, self.origin.clone(), self.seq, body).map_err(|e| StoreError::TooLarge(format!("{e:?}")))?;
         self.seq += 1;
         self.insert(record.clone());
         self.refresh();
-        record
+        Ok(record)
     }
 
     fn insert(&mut self, record: Rec<A>) -> bool {

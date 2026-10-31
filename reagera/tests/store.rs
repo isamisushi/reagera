@@ -342,3 +342,29 @@ fn views_are_testable_without_a_browser() {
     let msgs = html.find("button").unwrap().fire("click", &DomEvent::default());
     assert_eq!(msgs, vec![Msg::Add(1)]);
 }
+
+#[test]
+fn an_event_that_does_not_fit_the_wire_is_refused_and_nothing_changes() {
+    let mut s = store("a", 1000, 10);
+    s.dispatch(Msg::Add(1)).unwrap();
+    let huge = Msg::Rename { label: "x".repeat(200 * 1024), note: None }; // minbin caps a String at 100 KiB
+    assert!(matches!(s.dispatch(huge), Err(reagera::StoreError::TooLarge(_))));
+    assert_eq!(s.len(), 1);
+    let next = s.dispatch(Msg::Add(1)).unwrap();
+    assert_eq!(next.seq(), 1, "the refused event used no sequence number");
+}
+
+#[test]
+fn a_session_larger_than_one_mebibyte_round_trips() {
+    // minbin caps a Vec at 1 MiB; the session writes its records itself, up to 64 MiB.
+    let mut s = store("a", 1000, 1);
+    let label = "y".repeat(500);
+    for _ in 0..3000 {
+        s.dispatch(Msg::Rename { label: label.clone(), note: None }).unwrap();
+    }
+    let bytes = s.export();
+    assert!(bytes.len() > 1_048_576, "{} bytes", bytes.len());
+    let mut copy: Store<Counter> = Store::import(&bytes, Options::default()).unwrap();
+    assert_eq!(copy.len(), 3000);
+    assert_eq!(copy.events(), s.events());
+}

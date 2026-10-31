@@ -265,7 +265,7 @@ u8    format version (3)
 String app name, checked on import
 bool  live
 i64   head ms (0 when live)
-Vec<Record>: per record i64 ms, String origin, u32 seq, u8 body tag,
+u32   record count, then per record: i64 ms, String origin, u32 seq, u8 body tag,
              then the event in your enum's format (tag 0),
              or u128 request ID, the request, the outcome (tag 1)
 ```
@@ -342,6 +342,8 @@ shared-cpu-1x machine that stops when idle and starts on the first request.
 - The history lives in memory. Persist the export bytes yourself. The examples use the
   URL hash.
 - `apply` must not panic; a panic inside ConTime's worker aborts the page.
+- minbin caps a string at 100 KiB and a record at 1 MiB. `dispatch` refuses a larger
+  event with `StoreError::TooLarge` and records nothing. A session may be 64 MiB.
 - A request is performed by the origin that emitted it. A store that imports a session
   under a new origin performs nothing, which is what a replay wants. A reload of the
   same tab keeps its origin (the runtime stores it in `sessionStorage`), so the tab

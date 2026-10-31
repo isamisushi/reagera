@@ -1,7 +1,9 @@
 //! A whole history as bytes.
 //!
 //! Layout: magic `u32` "RGRA", version `u8`, app name, `live: bool`,
-//! `head_ms: i64`, then the records as a `Vec`. Nothing else. Record IDs are
+//! `head_ms: i64`, a `u32` record count, then the records. Nothing else. The
+//! records are written one by one rather than as a minbin `Vec`, because a
+//! `Vec` is capped at 1 MiB and a session may be 64 MiB. Record IDs are
 //! recomputed on import, so a session cannot carry a record whose ID disagrees
 //! with its content. Pending requests are not stored: they are derived from
 //! the records when the history is folded.
@@ -34,7 +36,12 @@ impl<'a, B: Wire> ToFromBytes<'a> for Session<B> {
         writer.write(&self.name)?;
         writer.write(&self.live)?;
         writer.write(&self.head_ms)?;
-        writer.write(&self.records)
+        let count = u32::try_from(self.records.len()).map_err(|_| ToFromByteError::InvalidValue)?;
+        writer.write(&count)?;
+        for record in &self.records {
+            writer.write(record)?;
+        }
+        Ok(())
     }
 
     fn from_bytes(buffer: &mut Self, reader: &mut BytesReader<'a>) -> Result<usize, ToFromByteError> {
@@ -48,11 +55,16 @@ impl<'a, B: Wire> ToFromBytes<'a> for Session<B> {
         reader.read_into(&mut buffer.name)?;
         reader.read_into(&mut buffer.live)?;
         reader.read_into(&mut buffer.head_ms)?;
-        reader.read_into(&mut buffer.records)?;
+        let mut count = 0u32;
+        reader.read_into(&mut count)?;
+        buffer.records.clear();
+        for _ in 0..count {
+            buffer.records.push(reader.read(Record::default)?);
+        }
         Ok(reader.pos)
     }
 
     fn byte_count(&self) -> usize {
-        MAGIC.byte_count() + VERSION.byte_count() + self.name.byte_count() + self.live.byte_count() + self.head_ms.byte_count() + self.records.byte_count()
+        MAGIC.byte_count() + VERSION.byte_count() + self.name.byte_count() + self.live.byte_count() + self.head_ms.byte_count() + 4 + self.records.iter().map(Record::byte_count).sum::<usize>()
     }
 }

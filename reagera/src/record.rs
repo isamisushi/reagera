@@ -21,15 +21,26 @@ pub struct Record<E> {
 }
 
 impl<E: Wire> Record<E> {
-    /// Build a record and compute its ID.
+    /// Build a record and compute its ID. Panics when the record does not fit
+    /// the wire format; see [`Record::try_new`] for the limits.
     pub fn new(ms: i64, origin: impl Into<String>, seq: u32, body: E) -> Self {
-        let mut r = Self { ms, origin: origin.into(), seq, body, id: 0 };
-        r.id = r.compute_id();
-        r
+        Self::try_new(ms, origin, seq, body).expect("record fits the wire format")
     }
 
+    /// Build a record and compute its ID, or report why it cannot go on the wire.
+    ///
+    /// minbin caps a `String` at 100 KiB and a record at 1 MiB. A record that
+    /// breaks either limit has no bytes, so it has no ID and cannot be retained.
+    pub fn try_new(ms: i64, origin: impl Into<String>, seq: u32, body: E) -> Result<Self, ToFromByteError> {
+        let mut r = Self { ms, origin: origin.into(), seq, body, id: 0 };
+        let bytes = minbin::to_bytes(&r)?;
+        r.id = fnv1a_128(&bytes);
+        Ok(r)
+    }
+
+    /// The ID of a record that has already been decoded, so it is known to fit.
     fn compute_id(&self) -> u128 {
-        let bytes = minbin::to_bytes(self).expect("record fits the wire format");
+        let bytes = minbin::to_bytes(self).expect("a decoded record fits the wire format");
         fnv1a_128(&bytes)
     }
 
