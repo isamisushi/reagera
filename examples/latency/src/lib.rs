@@ -150,7 +150,7 @@ mod lab {
         }
 
         fn emit(&mut self, from: Client, body: Msg) {
-            let record = self.store(from).dispatch(body);
+            let Ok(record) = self.store(from).dispatch(body) else { return };
             self.reference.receive(record.clone());
             let delay = (self.latency as f64 + (self.rand() * 2.0 - 1.0) * self.jitter as f64).max(0.0) as i64;
             self.in_flight.push(InFlight { to: from.other(), record, due_ms: now_ms() + delay });
@@ -207,19 +207,16 @@ mod lab {
                 Some(ms) => self.store(c).state_at(ms),
                 None => self.store(c).state().clone(),
             };
-            let store = match c {
-                Client::Alice => &self.alice,
-                Client::Bob => &self.bob,
-            };
             let pending = self.in_flight.iter().filter(|m| m.to == c).count();
             let late: Vec<u128> = self.late.iter().filter(|(lc, _)| *lc == c).map(|(_, id)| *id).collect();
             let t0 = self.t0;
+            let events = self.store(c).events();
             section()
                 .class("client")
                 .child(
                     header()
                         .child(strong().style(format!("color:{}", colour(c.name()))).text(c.name()))
-                        .child(span().text(format!("{} events", store.events().len())))
+                        .child(span().text(format!("{} events", events.len())))
                         .child(if pending > 0 { span().class("pending").text(format!("{pending} in flight")) } else { span().class("ok").text("nothing in flight") })
                         .child(span().text(format!("{} arrived late", late.len()))),
                 )
@@ -249,7 +246,7 @@ mod lab {
                                 .build()
                         })),
                 )
-                .child(ol().class("log").children(store.events().iter().rev().take(8).rev().map(|r| {
+                .child(ol().class("log").children(events.iter().rev().take(8).rev().map(|r| {
                     let is_late = late.contains(&r.id());
                     let future = r.ms() > through;
                     li().key(format!("{:x}", r.id()))
@@ -311,7 +308,7 @@ mod lab {
                 .child(div().class("clients").child(alice).child(bob))
                 .child(p().class("hint").text(format!(
                     "reference store: {} events, {} bytes exported. Every record is a minbin-encoded ConTime event. Each arena shows state rebuilt by ConTime, and the scrubber queries it at that time without moving the head.",
-                    self.reference.events().len(),
+                    self.reference.len(),
                     self.reference.export().len()
                 )))
                 .build()
@@ -328,7 +325,7 @@ mod lab {
     #[wasm_bindgen(start)]
     fn start() {
         let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
-        let reference = match hash.strip_prefix('#').filter(|h| !h.is_empty()) {
+        let mut reference = match hash.strip_prefix('#').filter(|h| !h.is_empty()) {
             Some(text) => Store::<Arena>::import_text(text, Options::default().origin("reference")).unwrap_or_else(|_| Store::new(Options::default().origin("reference"))),
             None => Store::new(Options::default().origin("reference")),
         };
@@ -336,9 +333,9 @@ mod lab {
         let mut bob = Store::<Arena>::new(Options::default().origin("bob"));
         for r in reference.events() {
             alice.receive(r.clone());
-            bob.receive(r.clone());
+            bob.receive(r);
         }
-        let t0 = reference.events().first().map_or(now_ms(), |r| r.ms());
+        let t0 = if reference.is_empty() { now_ms() } else { reference.earliest_ms() };
         let lab = Rc::new(RefCell::new(Lab {
             alice,
             bob,
@@ -431,9 +428,9 @@ mod tests {
     fn a_late_record_renumbers_the_dots_and_clients_converge() {
         let mut alice = store("alice", 1000);
         let mut bob = store("bob", 1050);
-        let a1 = alice.dispatch(Msg::Place { x: 1, y: 1 }); // 1000
-        let a2 = alice.dispatch(Msg::Place { x: 2, y: 2 }); // 1100
-        let b1 = bob.dispatch(Msg::Place { x: 3, y: 3 }); // 1050
+        let a1 = alice.dispatch(Msg::Place { x: 1, y: 1 }).unwrap(); // 1000
+        let a2 = alice.dispatch(Msg::Place { x: 2, y: 2 }).unwrap(); // 1100
+        let b1 = bob.dispatch(Msg::Place { x: 3, y: 3 }).unwrap(); // 1050
 
         assert_eq!(alice.state().dots.iter().map(|d| d.x).collect::<Vec<_>>(), vec![1, 2]);
         alice.receive(b1.clone()); // late: older than a2
@@ -448,9 +445,9 @@ mod tests {
     fn clear_applies_at_its_own_time() {
         let mut alice = store("alice", 1000);
         let mut bob = store("bob", 1150);
-        alice.dispatch(Msg::Place { x: 1, y: 1 }); // 1000
-        let clear = alice.dispatch(Msg::Clear); // 1100
-        let b1 = bob.dispatch(Msg::Place { x: 2, y: 2 }); // 1150
+        alice.dispatch(Msg::Place { x: 1, y: 1 }).unwrap(); // 1000
+        let clear = alice.dispatch(Msg::Clear).unwrap(); // 1100
+        let b1 = bob.dispatch(Msg::Place { x: 2, y: 2 }).unwrap(); // 1150
         alice.receive(b1);
         bob.receive(clear);
         assert_eq!(alice.state().dots.iter().map(|d| d.x).collect::<Vec<_>>(), vec![2]);

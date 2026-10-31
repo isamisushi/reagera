@@ -91,9 +91,12 @@ pub fn mount_store<A: App>(root_id: &str, store: Store<A>, options: MountOptions
 }
 
 impl<A: App> Runtime<A> {
-    /// Record an event and schedule a render.
+    /// Record an event and schedule a render. While the head is in the past the
+    /// message is dropped and a line is logged: time travel is read-only.
     pub fn dispatch(&self, msg: A::Event) {
-        self.inner.store.borrow_mut().dispatch(msg);
+        if let Err(e) = self.inner.store.borrow_mut().dispatch(msg) {
+            super::log(&format!("reagera: {e}"));
+        }
         self.schedule();
     }
 
@@ -127,18 +130,22 @@ impl<A: App> Runtime<A> {
         });
     }
 
-    /// Render right now.
+    /// Render right now. The store is released before the DOM changes, because
+    /// a DOM change can fire a listener synchronously, and that listener may dispatch.
     pub fn render_now(&self) {
-        let store = self.inner.store.borrow();
-        let tree = A::view(store.state(), &store.frame());
+        let (tree, dev_tree, hash) = {
+            let mut store = self.inner.store.borrow_mut();
+            let tree = A::view(store.state(), &store.frame());
+            let dev_tree = self.inner.dev.borrow().as_ref().map(|(_, local)| devtools::view(&mut store, local));
+            let hash = self.inner.options.session_in_url.then(|| store.export_text());
+            (tree, dev_tree, hash)
+        };
         self.inner.view.borrow_mut().render(tree);
-        if let Some((renderer, local)) = self.inner.dev.borrow_mut().as_mut() {
-            renderer.render(devtools::view(&store, local));
+        if let (Some(tree), Some((renderer, _))) = (dev_tree, self.inner.dev.borrow_mut().as_mut()) {
+            renderer.render(tree);
         }
-        if self.inner.options.session_in_url {
-            if let Some(w) = web_sys::window() {
-                let _ = w.history().and_then(|h| h.replace_state_with_url(&JsValue::NULL, "", Some(&format!("#{}", store.export_text()))));
-            }
+        if let (Some(hash), Some(w)) = (hash, web_sys::window()) {
+            let _ = w.history().and_then(|h| h.replace_state_with_url(&JsValue::NULL, "", Some(&format!("#{hash}"))));
         }
     }
 }

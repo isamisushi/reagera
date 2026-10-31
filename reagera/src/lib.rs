@@ -27,7 +27,7 @@ pub mod web;
 pub use app::{App, Frame, Wire};
 pub use html::{DomEvent, Element, Handler, Html};
 pub use record::Record;
-pub use store::{Options, Store, StoreError};
+pub use store::{EngineStatus, Options, Store, StoreError};
 pub use tick::Tick;
 
 /// Re-exported so apps only need one dependency for their event types.

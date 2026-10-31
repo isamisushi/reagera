@@ -41,12 +41,12 @@ pub fn handle<A: App>(store: &mut Store<A>, local: &mut DevState, msg: DevMsg) {
         DevMsg::Live => store.go_live(),
         DevMsg::StepBack => {
             let head = store.head_ms();
-            let before = store.events().iter().rev().find(|r| r.ms() < head).map(|r| r.ms());
+            let before = store.events_between(i64::MIN, head - 1).last().map(|r| r.ms());
             store.backtrack(before.unwrap_or_else(|| store.earliest_ms() - 1));
         }
         DevMsg::StepForward => {
             let head = store.head_ms();
-            match store.events().iter().find(|r| r.ms() > head).map(|r| r.ms()) {
+            match store.events_between(head, i64::MAX).first().map(|r| r.ms()) {
                 Some(ms) => store.backtrack(ms),
                 None => store.go_live(),
             }
@@ -54,9 +54,9 @@ pub fn handle<A: App>(store: &mut Store<A>, local: &mut DevState, msg: DevMsg) {
         DevMsg::Export => local.exported = store.export_text(),
         DevMsg::ImportText(s) => local.import_text = s,
         DevMsg::Import => match Store::<A>::import_text(&local.import_text, Options::default()) {
-            Ok(other) => {
+            Ok(mut other) => {
                 for r in other.events() {
-                    store.receive(r.clone());
+                    store.receive(r);
                 }
                 if other.live() {
                     store.go_live();
@@ -71,8 +71,9 @@ pub fn handle<A: App>(store: &mut Store<A>, local: &mut DevState, msg: DevMsg) {
 }
 
 /// The panel for a store.
-pub fn view<A: App>(store: &Store<A>, local: &DevState) -> Html<DevMsg> {
+pub fn view<A: App>(store: &mut Store<A>, local: &DevState) -> Html<DevMsg> {
     let events = store.events();
+    let status = store.engine_status();
     let min = store.earliest_ms();
     let max = store.latest_ms().max(min + 1);
     let head = store.head_ms();
@@ -84,8 +85,10 @@ pub fn view<A: App>(store: &Store<A>, local: &DevState) -> Html<DevMsg> {
                 .style("display:flex;gap:8px;align-items:center")
                 .child(strong().text("reagera"))
                 .child(span().text(format!("{} events", events.len())))
+                .child(span().attr("title", "ConTime worker: histories, pending, checkpoint spacing").text(format!("contime {}h {}p cp{}", status.histories, status.pending, status.checkpoint_interval)))
                 .child(span().style(if live { "margin-left:auto;color:#34d399" } else { "margin-left:auto;color:#fbbf24" }).text(if live { "LIVE".to_string() } else { format!("@ +{}ms", head - min) })),
         )
+        .child_if(!live, || span().style("color:#fbbf24").text("read-only: the head is in the past, press live to edit").build())
         .child(
             input()
                 .attr("type", "range")

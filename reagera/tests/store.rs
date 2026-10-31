@@ -47,6 +47,18 @@ impl App for Counter {
     }
 }
 
+trait NextOrLast {
+    fn get_mut_next(&self) -> i64;
+}
+impl NextOrLast for Cell<std::vec::IntoIter<i64>> {
+    fn get_mut_next(&self) -> i64 {
+        let mut it = self.replace(Vec::new().into_iter());
+        let v = it.next().unwrap_or(0);
+        self.set(it);
+        v
+    }
+}
+
 fn ticking(start: i64, step: i64) -> impl FnMut() -> i64 {
     let t = Rc::new(Cell::new(start - step));
     move || {
@@ -62,8 +74,8 @@ fn store(origin: &str, start: i64, step: i64) -> Store<Counter> {
 #[test]
 fn state_is_a_fold_over_the_log() {
     let mut s = store("a", 1000, 10);
-    s.dispatch(Msg::Add(2));
-    s.dispatch(Msg::Add(3));
+    s.dispatch(Msg::Add(2)).unwrap();
+    s.dispatch(Msg::Add(3)).unwrap();
     assert_eq!(s.state().count, 5);
     assert_eq!(s.events().len(), 2);
     assert_eq!(s.head_ms(), 1010);
@@ -75,7 +87,7 @@ fn state_is_a_fold_over_the_log() {
 fn state_at_answers_any_time_without_moving_the_head() {
     let mut s = store("a", 1000, 10);
     for i in 1..=10 {
-        s.dispatch(Msg::Add(i));
+        s.dispatch(Msg::Add(i)).unwrap();
     }
     assert_eq!(s.state_at(999).count, 0);
     assert_eq!(s.state_at(1000).count, 1);
@@ -91,8 +103,8 @@ fn checkpoints_agree_with_full_replay() {
     let mut b: Store<Counter> = Store::new(Options { checkpoint_interval: 1_000_000, ..Options::default() }.origin("a").clock(ticking(1000, 10)));
     for i in 1..=50 {
         let m = if i % 7 == 0 { Msg::Reset } else { Msg::Add(i) };
-        a.dispatch(m.clone());
-        b.dispatch(m);
+        a.dispatch(m.clone()).unwrap();
+        b.dispatch(m).unwrap();
     }
     for t in (990..1500).step_by(7) {
         assert_eq!(a.state_at(t), b.state_at(t), "t={t}");
@@ -103,7 +115,7 @@ fn checkpoints_agree_with_full_replay() {
 fn backtrack_shows_the_past_and_loses_nothing() {
     let mut s = store("a", 1000, 10);
     for _ in 0..3 {
-        s.dispatch(Msg::Add(1));
+        s.dispatch(Msg::Add(1)).unwrap();
     }
     s.backtrack(1010);
     assert_eq!(s.state().count, 2);
@@ -115,26 +127,51 @@ fn backtrack_shows_the_past_and_loses_nothing() {
 }
 
 #[test]
-fn dispatching_while_backtracked_forks_history() {
+fn time_travel_is_read_only() {
     let mut s = store("a", 1000, 10);
-    s.dispatch(Msg::Add(1));
-    s.dispatch(Msg::Add(10));
-    s.dispatch(Msg::Add(100));
+    s.dispatch(Msg::Add(1)).unwrap();
+    s.dispatch(Msg::Add(10)).unwrap();
     s.backtrack(1000);
-    s.dispatch(Msg::Add(5));
-    assert!(s.live());
-    assert_eq!(s.state().count, 6);
-    let bodies: Vec<_> = s.events().iter().map(|r| r.body().clone()).collect();
-    assert_eq!(bodies, vec![Msg::Add(1), Msg::Add(5)]);
+    assert_eq!(s.dispatch(Msg::Add(5)), Err(reagera::StoreError::NotLive));
+    assert_eq!(s.events().len(), 2, "nothing is dropped");
+    s.go_live();
+    s.dispatch(Msg::Add(5)).unwrap();
+    assert_eq!(s.state().count, 16);
+}
+
+#[test]
+fn dispatch_time_never_goes_backwards() {
+    // A clock that jumps back, as NTP or a sleeping laptop can make Date.now() do.
+    let times = Rc::new(Cell::new(vec![5000, 4000, 4500].into_iter()));
+    let t = times.clone();
+    let mut s: Store<Counter> = Store::new(Options::default().origin("a").clock(move || t.get_mut_next()));
+    let r1 = s.dispatch(Msg::Add(1)).unwrap();
+    let r2 = s.dispatch(Msg::Reset).unwrap();
+    let r3 = s.dispatch(Msg::Add(2)).unwrap();
+    assert_eq!((r1.ms(), r2.ms(), r3.ms()), (5000, 5000, 5000));
+    assert_eq!(s.state().count, 2, "reset is applied after the first add, as made");
+    let _ = times;
+}
+
+#[test]
+fn a_reply_is_ordered_after_what_was_seen() {
+    let mut a = store("a", 1000, 10); // a's clock is behind
+    let mut b = store("b", 9000, 10);
+    let from_b = b.dispatch(Msg::Add(1)).unwrap(); // 9000
+    a.receive(from_b);
+    let reply = a.dispatch(Msg::Reset).unwrap();
+    assert_eq!(reply.ms(), 9000);
+    assert_eq!(a.state().count, 0);
+    assert_eq!(a.engine_status().histories, 1);
 }
 
 #[test]
 fn late_events_land_by_their_own_time() {
     let mut a = store("a", 1000, 100);
     let mut b = store("b", 1050, 100);
-    let a1 = a.dispatch(Msg::Add(1)); // 1000
-    let a2 = a.dispatch(Msg::Reset); // 1100
-    let b1 = b.dispatch(Msg::Add(7)); // 1050, arrives late at a
+    let a1 = a.dispatch(Msg::Add(1)).unwrap(); // 1000
+    let a2 = a.dispatch(Msg::Reset).unwrap(); // 1100
+    let b1 = b.dispatch(Msg::Add(7)).unwrap(); // 1050, arrives late at a
     assert!(a.receive(b1.clone()));
     let ids: Vec<_> = a.events().iter().map(Record::id).collect();
     assert_eq!(ids, vec![a1.id(), b1.id(), a2.id()]);
@@ -155,7 +192,7 @@ fn late_events_land_by_their_own_time() {
 #[test]
 fn duplicates_are_ignored() {
     let mut a = store("a", 1000, 10);
-    let r = a.dispatch(Msg::Add(1));
+    let r = a.dispatch(Msg::Add(1)).unwrap();
     assert!(!a.receive(r));
     assert_eq!(a.state().count, 1);
     assert_eq!(a.events().len(), 1);
@@ -164,9 +201,9 @@ fn duplicates_are_ignored() {
 #[test]
 fn same_millisecond_keeps_dispatch_order() {
     let mut s: Store<Counter> = Store::new(Options::default().origin("a").clock(|| 1000));
-    s.dispatch(Msg::Add(1));
-    s.dispatch(Msg::Reset);
-    s.dispatch(Msg::Add(2));
+    s.dispatch(Msg::Add(1)).unwrap();
+    s.dispatch(Msg::Reset).unwrap();
+    s.dispatch(Msg::Add(2)).unwrap();
     assert_eq!(s.state().count, 2);
     assert_eq!(s.state_at(1000).count, 2);
 }
@@ -175,13 +212,14 @@ fn same_millisecond_keeps_dispatch_order() {
 fn export_and_import_reproduce_the_identical_history() {
     let mut s = store("tab1", 1_700_000_000_000, 37);
     for i in 1..=20 {
-        s.dispatch(Msg::Add(i));
+        s.dispatch(Msg::Add(i)).unwrap();
     }
-    s.dispatch(Msg::Rename { label: "héllo".into(), note: Some("n".into()) });
+    s.dispatch(Msg::Rename { label: "héllo".into(), note: Some("n".into()) }).unwrap();
     s.backtrack(1_700_000_000_000 + 37 * 5);
     let bytes = s.export();
     let mut copy: Store<Counter> = Store::import(&bytes, Options::default().origin("tab2")).unwrap();
     assert_eq!(copy.events(), s.events());
+    assert_eq!(copy.len(), 21);
     assert!(!copy.live());
     assert_eq!(copy.head_ms(), s.head_ms());
     assert_eq!(copy.state(), s.state());
@@ -191,7 +229,7 @@ fn export_and_import_reproduce_the_identical_history() {
     assert_eq!(copy.state().label, "héllo");
 
     let text = s.export_text();
-    let again: Store<Counter> = Store::import_text(&text, Options::default()).unwrap();
+    let mut again: Store<Counter> = Store::import_text(&text, Options::default()).unwrap();
     assert_eq!(again.events(), s.events());
 }
 
@@ -208,7 +246,7 @@ fn import_rejects_other_apps_and_garbage() {
         }
     }
     let mut s = store("a", 1000, 10);
-    s.dispatch(Msg::Add(1));
+    s.dispatch(Msg::Add(1)).unwrap();
     assert!(matches!(Store::<Other>::import(&s.export(), Options::default()), Err(reagera::StoreError::BadSession(_))));
     assert!(Store::<Counter>::import(b"nope", Options::default()).is_err());
     assert!(Store::<Counter>::import_text("***", Options::default()).is_err());
@@ -217,9 +255,9 @@ fn import_rejects_other_apps_and_garbage() {
 #[test]
 fn import_with_the_same_origin_continues_the_sequence() {
     let mut s = store("same", 1000, 10);
-    s.dispatch(Msg::Add(1));
+    s.dispatch(Msg::Add(1)).unwrap();
     let mut copy: Store<Counter> = Store::import(&s.export(), Options::default().origin("same").clock(ticking(2000, 10))).unwrap();
-    let r = copy.dispatch(Msg::Add(1));
+    let r = copy.dispatch(Msg::Add(1)).unwrap();
     assert_eq!(r.seq(), 1);
     assert_eq!(copy.state().count, 2);
 }
@@ -227,9 +265,9 @@ fn import_with_the_same_origin_continues_the_sequence() {
 #[test]
 fn fork_is_independent() {
     let mut s = store("a", 1000, 10);
-    s.dispatch(Msg::Add(1));
+    s.dispatch(Msg::Add(1)).unwrap();
     let mut twin = s.fork(Options::default().origin("b").clock(ticking(2000, 10)));
-    twin.dispatch(Msg::Add(41));
+    twin.dispatch(Msg::Add(41)).unwrap();
     assert_eq!(s.state().count, 1);
     assert_eq!(twin.state().count, 42);
 }
@@ -238,10 +276,12 @@ fn fork_is_independent() {
 fn events_between_explains_a_range() {
     let mut s = store("a", 1000, 10);
     for i in 0..5 {
-        s.dispatch(Msg::Add(i));
+        s.dispatch(Msg::Add(i)).unwrap();
     }
     let bodies: Vec<_> = s.events_between(1010, 1030).iter().map(|r| r.body().clone()).collect();
     assert_eq!(bodies, vec![Msg::Add(2), Msg::Add(3)]);
+    assert!(s.events_between(1030, 1010).is_empty());
+    assert_eq!(s.events_between(i64::MIN, i64::MAX).len(), 5);
 }
 
 #[test]
@@ -258,7 +298,7 @@ fn record_bytes_are_explicit() {
 #[test]
 fn views_are_testable_without_a_browser() {
     let mut s = store("a", 1000, 10);
-    s.dispatch(Msg::Add(4));
+    s.dispatch(Msg::Add(4)).unwrap();
     s.backtrack(1000);
     let html = Counter::view(s.state(), &s.frame());
     assert_eq!(html.to_html_string(), "<div><button>+</button><span>4</span><em>past</em></div>");

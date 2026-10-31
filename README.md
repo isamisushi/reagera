@@ -51,7 +51,7 @@ Use Reagera if exact replay of a session is more important than these items, for
 
 | Crate | Role in Reagera |
 | --- | --- |
-| contime | Keeps the history. Canonical ordering by `(time, id)`, deduplication, checkpoints every N events, point-in-time queries, late insertion with rebuild. Reagera uses the `manual` driver, so there are no threads: the worker is stepped on the browser main thread until it is idle. |
+| contime | Is the history. There is no second copy: the event list for export and for the devtools panel is a ConTime range query. Canonical ordering by `(time, id)`, deduplication, checkpoints every N events, point-in-time queries, late insertion with rebuild. Reagera uses the `manual` driver, so there are no threads: the worker is stepped on the browser main thread until it is idle. |
 | minbin | Encodes records and sessions. Fixed-width big-endian integers, length-prefixed strings, explicit enum tags. You write the schema with `minbin_enum!` or by hand; the bytes follow it. |
 | wasm-bindgen, web-sys | The DOM renderer, the runtime and the devtools panel. Only compiled for `wasm32`. The store and the view description compile natively, so tests do not need a browser. |
 
@@ -122,11 +122,19 @@ id, so the element is recreated empty after every add.
 | `body` | Your event. |
 | `id` | FNV-1a 128 of the four fields above, as minbin bytes. Used for deduplication and as the ConTime event ID. |
 
-`store.dispatch(body)` records an event at the clock's time. `store.dispatch_at(body, Some(ms))`
-sets the time. `Options::default().clock(...)` injects a fake clock in tests.
+`store.dispatch(body)` records an event at the clock's time, but never earlier than the
+newest record the store knows. So a store's own records keep the order they were made in
+even if the clock jumps back, and a reply to something the store has seen is ordered
+after it. `store.dispatch_at(body, ms)` sets the time explicitly.
+`Options::default().clock(...)` injects a fake clock in tests.
 `store.receive(record)` inserts a record made elsewhere; a record older than the newest
 one is placed at its own tick and later state is rebuilt. The same records received in
 any order produce the same state.
+
+Decide identity in `apply`, never in the view. A view runs against the state of the
+last render, and a second event before the next render sees the same state. The todo
+example uses the record's content ID as the todo's id, so two adds in one frame cannot
+collide.
 
 ## Time travel
 
@@ -140,10 +148,10 @@ store.state_at(ms);       // query any time without moving the head
 store.events_between(a, b);   // what happened between two frames
 ```
 
-Dispatching while the head is in the past drops every event after the head and starts
-a new future, as a rewind does in an editor. Use `store.fork(options)` first to keep
-both branches. A fork is an independent store with a copy of the history, like an
-Aurora clone.
+Time travel is read-only. `dispatch` while the head is in the past returns
+`StoreError::NotLive` and the devtools panel says so. Other stores may hold the same
+history, so no store discards records. To branch, `store.fork(options)` gives an
+independent store with a copy of the history, like an Aurora clone.
 
 ## Sessions
 
@@ -229,6 +237,9 @@ shared-cpu-1x machine that stops when idle and starts on the first request.
 - The history lives in memory. Persist the export bytes yourself. The examples use the
   URL hash.
 - `apply` must not panic; a panic inside ConTime's worker aborts the page.
+- Clocks of different clients are not reconciled. A client's own records are monotonic,
+  and a reply is ordered after what the client has seen, but two clients that have not
+  seen each other's records are ordered by their own clocks.
 
 ## License
 

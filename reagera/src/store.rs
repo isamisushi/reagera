@@ -1,10 +1,11 @@
 //! The store: a ConTime history of records plus a movable head.
 //!
-//! ConTime does the hard part. Records are inserted by their own tick, never by
-//! arrival order; a late record rebuilds the states after it; checkpoints keep
-//! queries cheap. The store adds what a UI needs on top: a journal in canonical
-//! order for export, an origin and sequence counter, a head that can look into
-//! the past, and sessions as minbin bytes.
+//! ConTime is the only copy of the history. Records are inserted by their own
+//! tick, never by arrival order; a late record rebuilds the states after it;
+//! checkpoints keep queries cheap; the event list for export is a ConTime
+//! query. The store adds what a UI needs on top: an origin and a sequence
+//! counter, a monotonic dispatch time, a head that can look into the past, and
+//! sessions as minbin bytes.
 //!
 //! Processing is Manual: no threads. Every operation enqueues work and then
 //! drains the worker on the calling thread, so results are available when the
@@ -18,7 +19,7 @@ use crate::{
     tick::Tick,
 };
 use contime::{
-    checkpoints::{ApplyBatch, ApplyEvents, CheckpointConfig, Snapshot},
+    checkpoints::{ApplyBatch, ApplyEvents, CheckpointConfig, Snapshot, Timestamp},
     manual::{ManualConfig, RawManualConTime},
 };
 use std::{cell::RefCell, collections::HashSet, fmt, num::NonZeroUsize, rc::Rc};
@@ -100,30 +101,41 @@ impl Options {
 pub enum StoreError {
     /// The bytes are not a session, or not one of this app.
     BadSession(String),
-    /// A record was rejected by the history.
-    Rejected(String),
-    /// The ConTime worker failed.
-    Engine(String),
+    /// The head is in the past. Time travel is read-only; call `go_live` to write.
+    NotLive,
 }
 
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadSession(m) => write!(f, "bad session: {m}"),
-            Self::Rejected(m) => write!(f, "rejected: {m}"),
-            Self::Engine(m) => write!(f, "engine: {m}"),
+            Self::NotLive => write!(f, "the head is in the past; go live before dispatching"),
         }
     }
 }
 
 impl std::error::Error for StoreError {}
 
+/// What the ConTime worker reports about itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EngineStatus {
+    /// Number of histories the worker owns. One for a Reagera app.
+    pub histories: usize,
+    /// Histories with work still queued.
+    pub pending: usize,
+    /// The tick live processing has been asked to reach.
+    pub processing_target: Tick,
+    /// Checkpoint spacing in events.
+    pub checkpoint_interval: u64,
+}
+
 /// The history, the head, and the sessions of one app.
 pub struct Store<A: App> {
     engine: Engine<A>,
-    /// Every retained record, in canonical (tick, id) order.
-    journal: Vec<Record<A::Event>>,
+    /// IDs of retained records. An index for `receive`, not a copy of the history.
     ids: HashSet<u128>,
+    earliest: Option<Tick>,
+    latest: Option<Tick>,
     origin: String,
     seq: u32,
     head_ms: Option<i64>,
@@ -140,8 +152,9 @@ impl<A: App> Store<A> {
         let origin = options.origin.unwrap_or_else(|| random_origin(clock()));
         Self {
             engine: new_engine(options.checkpoint_interval),
-            journal: Vec::new(),
             ids: HashSet::new(),
+            earliest: None,
+            latest: None,
             origin,
             seq: 0,
             head_ms: None,
@@ -171,12 +184,22 @@ impl<A: App> Store<A> {
 
     /// Millisecond of the newest retained record, or 0 when empty.
     pub fn latest_ms(&self) -> i64 {
-        self.journal.last().map_or(0, Record::ms)
+        self.latest.map_or(0, |t| t.ms)
     }
 
     /// Millisecond of the oldest retained record, or 0 when empty.
     pub fn earliest_ms(&self) -> i64 {
-        self.journal.first().map_or(0, Record::ms)
+        self.earliest.map_or(0, |t| t.ms)
+    }
+
+    /// Number of retained records.
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// True when no record is retained.
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
     }
 
     /// State at the head. Kept current by every mutating method.
@@ -186,19 +209,20 @@ impl<A: App> Store<A> {
 
     /// What a view may know besides the state.
     pub fn frame(&self) -> Frame {
-        Frame { live: self.live(), head_ms: self.head_ms(), events: self.journal.len() }
+        Frame { live: self.live(), head_ms: self.head_ms(), events: self.len() }
     }
 
-    /// Every retained record, oldest first.
-    pub fn events(&self) -> &[Record<A::Event>] {
-        &self.journal
+    /// Every retained record in canonical order, from the ConTime history.
+    pub fn events(&mut self) -> Vec<Record<A::Event>> {
+        self.query_events(Tick::minimum(), Tick::end_of(i64::MAX))
     }
 
-    /// Records with `from_ms < ms <= to_ms`.
-    pub fn events_between(&self, from_ms: i64, to_ms: i64) -> &[Record<A::Event>] {
-        let start = self.journal.partition_point(|r| r.ms() <= from_ms);
-        let end = self.journal.partition_point(|r| r.ms() <= to_ms);
-        &self.journal[start..end.max(start)]
+    /// Records with `from_ms < ms <= to_ms`, in canonical order.
+    pub fn events_between(&mut self, from_ms: i64, to_ms: i64) -> Vec<Record<A::Event>> {
+        if to_ms <= from_ms {
+            return Vec::new();
+        }
+        self.query_events(Tick { ms: from_ms.saturating_add(1), seq: 0 }, Tick { ms: to_ms.saturating_add(1), seq: 0 })
     }
 
     /// Records the history refused, as text. Drained by this call.
@@ -208,25 +232,35 @@ impl<A: App> Store<A> {
 
     /// State at any time, including every event in that millisecond. Does not move the head.
     pub fn state_at(&mut self, ms: i64) -> A::State {
-        self.query(Tick::end_of(ms))
+        self.query_state(Tick::end_of(ms))
+    }
+
+    /// What the ConTime worker reports.
+    pub fn engine_status(&self) -> EngineStatus {
+        let s = self.engine.worker_status();
+        EngineStatus { histories: s.history_stores, pending: s.pending_histories, processing_target: s.processing_target, checkpoint_interval: self.checkpoint_interval }
     }
 
     // ----- writing -------------------------------------------------------
 
-    /// Record an event at the clock's time. Returns the record so callers can share it.
+    /// Record an event now. Returns the record so callers can share it.
     ///
-    /// When the head is in the past, every record after the head is dropped
-    /// first; the new record starts a new future, as a rewind would.
-    pub fn dispatch(&mut self, body: A::Event) -> Record<A::Event> {
-        self.dispatch_at(body, None)
+    /// The time is the clock's value, but never earlier than the newest record
+    /// this store knows, so a store's own records are ordered as they were made
+    /// and a reply to something it has seen is ordered after it.
+    ///
+    /// Fails with [`StoreError::NotLive`] while the head is in the past: time
+    /// travel is read-only, because other stores may hold the same history.
+    pub fn dispatch(&mut self, body: A::Event) -> Result<Record<A::Event>, StoreError> {
+        if !self.live() {
+            return Err(StoreError::NotLive);
+        }
+        let ms = (self.clock)().max(self.latest_ms());
+        Ok(self.dispatch_at(body, ms))
     }
 
-    /// Record an event at an explicit millisecond.
-    pub fn dispatch_at(&mut self, body: A::Event, ms: Option<i64>) -> Record<A::Event> {
-        if let Some(head) = self.head_ms {
-            self.truncate_after(head);
-        }
-        let ms = ms.unwrap_or_else(|| (self.clock)());
+    /// Record an event at an explicit millisecond, regardless of the head and the clock.
+    pub fn dispatch_at(&mut self, body: A::Event, ms: i64) -> Record<A::Event> {
         let record = Record::new(ms, self.origin.clone(), self.seq, body);
         self.seq += 1;
         self.insert(record.clone());
@@ -257,25 +291,20 @@ impl<A: App> Store<A> {
     }
 
     /// An independent store with the same history and head, like an Aurora clone.
-    pub fn fork(&self, options: Options) -> Self {
+    pub fn fork(&mut self, options: Options) -> Self {
         Self::import(&self.export(), options).expect("a store exports a valid session")
     }
 
     // ----- sessions ------------------------------------------------------
 
     /// The session as minbin bytes.
-    pub fn export(&self) -> Vec<u8> {
-        let session = Session {
-            name: A::NAME.to_string(),
-            live: self.live(),
-            head_ms: self.head_ms.unwrap_or(0),
-            records: self.journal.clone(),
-        };
+    pub fn export(&mut self) -> Vec<u8> {
+        let session = Session { name: A::NAME.to_string(), live: self.live(), head_ms: self.head_ms.unwrap_or(0), records: self.events() };
         minbin::to_bytes(&session).expect("session fits the wire format")
     }
 
     /// The session as base64 text, for a URL or a bug report.
-    pub fn export_text(&self) -> String {
+    pub fn export_text(&mut self) -> String {
         base64::encode(&self.export())
     }
 
@@ -309,12 +338,11 @@ impl<A: App> Store<A> {
         if !self.ids.insert(record.id()) {
             return false;
         }
-        let key = (record.tick(), record.id());
-        let pos = self.journal.partition_point(|r| (r.tick(), r.id()) < key);
-        self.engine.apply([record.clone()]).expect("manual queue has room");
-        self.journal.insert(pos, record);
-        let latest = self.journal.last().map(Record::tick).unwrap_or_default();
-        self.engine.advance_to(latest).expect("manual queue has room");
+        let tick = record.tick();
+        self.earliest = Some(self.earliest.map_or(tick, |e| e.min(tick)));
+        self.latest = Some(self.latest.map_or(tick, |l| l.max(tick)));
+        self.engine.apply([record]).expect("manual queue has room");
+        self.engine.advance_to(self.latest.unwrap_or_default()).expect("manual queue has room");
         self.drain();
         true
     }
@@ -335,7 +363,7 @@ impl<A: App> Store<A> {
         }
     }
 
-    fn query(&mut self, tick: Tick) -> A::State {
+    fn query_state(&mut self, tick: Tick) -> A::State {
         let slot: Rc<RefCell<Option<A::State>>> = Rc::new(RefCell::new(None));
         let out = slot.clone();
         self.engine
@@ -348,23 +376,29 @@ impl<A: App> Store<A> {
         result.unwrap_or_default()
     }
 
+    /// Records in the half-open tick interval `[from, to)`.
+    fn query_events(&mut self, from: Tick, to: Tick) -> Vec<Record<A::Event>> {
+        if self.ids.is_empty() {
+            return Vec::new();
+        }
+        let slot: Rc<RefCell<Vec<Record<A::Event>>>> = Rc::new(RefCell::new(Vec::new()));
+        let out = slot.clone();
+        self.engine
+            .query_events_between(ROOT_HISTORY, from, to, move |events| {
+                *out.borrow_mut() = events.iter().map(|e| (**e).clone()).collect();
+            })
+            .expect("manual queue has room");
+        self.drain();
+        let result = std::mem::take(&mut *slot.borrow_mut());
+        result
+    }
+
     fn refresh(&mut self) {
         let tick = match self.head_ms {
             Some(ms) => Tick::end_of(ms),
-            None => self.journal.last().map(Record::tick).unwrap_or_default(),
+            None => self.latest.unwrap_or_default(),
         };
-        self.current = self.query(tick);
-    }
-
-    fn truncate_after(&mut self, head_ms: i64) {
-        let keep: Vec<_> = self.journal.iter().filter(|r| r.ms() <= head_ms).cloned().collect();
-        self.engine = new_engine(self.checkpoint_interval);
-        self.journal.clear();
-        self.ids.clear();
-        self.head_ms = None;
-        for record in keep {
-            self.insert(record);
-        }
+        self.current = self.query_state(tick);
     }
 }
 
