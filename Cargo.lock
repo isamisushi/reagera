@@ -189,6 +189,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reagera-example-race"
+version = "0.0.0"
+dependencies = [
+ "reagera",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "reagera-example-todo"
 version = "0.0.0"
 dependencies = [

@@ -36,7 +36,7 @@ If you need its ecosystem, server-side rendering, keyed list reordering, or a sm
 download, use React. Each Reagera example is about 100 KB of WebAssembly after gzip.
 If exact replay of a session matters more, use Reagera: collaborative tools,
 offline-first apps, or bugs that you cannot reproduce. Reagera is an early project with
-three examples and no production use.
+five examples and no production use.
 
 ## ConTime and minbin
 
@@ -282,6 +282,11 @@ Open http://localhost:8080/. Run the tests with `cargo test --workspace`.
 - Compare: the same todo app in React 18 and in Reagera, side by side. A script bar sends
   the same action to both. Under each app, a panel shows what its framework keeps: React
   keeps the latest reducer result, Reagera keeps the log, the fold, and a head to move.
+- Race: a search box in React 18 and in Reagera, side by side. The answer for "r" arrives
+  after the answer for "rea". The naive React effect shows the wrong list, and a checkbox
+  adds the usual cleanup flag. Reagera checks the answer in `resolve`. That check is also
+  app code. The difference is that the race stays in the log, so you can scrub it, reload
+  it, and test it with no timers.
 - Todo: the classic app. The session lives in the URL hash, so the URL is the bug report.
 - Latency lab: two clients, delayed delivery with jitter. A late record gets an orange
   ring. Both clients agree as soon as nothing is in flight.

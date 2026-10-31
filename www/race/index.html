@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Race conditions, side by side</title>
+<style>
+  :root { --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --react: #0ea5e9; --reagera: #f97316; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f3f4f6; color: var(--ink); }
+  main { max-width: 1040px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-weight: 600; margin: 0 0 4px; }
+  .hint { color: var(--muted); font-size: 14px; margin: 0 0 12px; }
+  .script { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 20px; padding: 10px 12px; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.08); font-size: 14px; }
+  .script input { flex: 1 1 180px; font: inherit; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 6px; }
+  .script button { font: inherit; padding: 4px 10px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; }
+  .script button.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .script button[disabled] { opacity: .5; cursor: wait; }
+  .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 820px) { .columns { grid-template-columns: 1fr; } }
+  .column > h2 { margin: 0 0 8px; font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .column > h2 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  #react h2 .dot { background: var(--react); }
+  #reagera-column h2 .dot { background: var(--reagera); }
+
+  .app { background: #fff; padding: 12px 16px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  .app > input { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; }
+  .status { margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+  .wrong { margin: 8px 0 0; padding: 4px 8px; border-radius: 6px; background: #fee2e2; color: #991b1b; font-size: 14px; }
+  .list { list-style: none; padding: 0; margin: 8px 0; min-height: 24px; }
+  .list li { padding: 4px 0; border-bottom: 1px solid #f3f4f6; }
+  .answers { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .answers th { text-align: left; color: var(--muted); font-weight: normal; }
+  .answers td, .answers th { padding: 2px 6px 2px 0; }
+  .answers tr.ignored { color: #9ca3af; }
+  .answers tr.bad { color: #991b1b; }
+  .past { display: block; margin-top: 8px; color: #92400e; }
+
+  .inside { margin-top: 12px; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 12px 14px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .inside h4 { margin: 0 0 4px; font-size: 13px; color: #f9fafb; }
+  .inside section + section { border-top: 1px solid #374151; margin-top: 10px; padding-top: 10px; }
+  .inside p { margin: 0 0 8px; color: #9ca3af; }
+  .inside pre { margin: 0 0 8px; padding: 8px; background: #1f2937; border-radius: 6px; overflow-x: auto; }
+  .inside label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+
+  /* The devtools panel is fixed to the corner, and it would cover the Reagera column. */
+  body > div > div { position: static !important; width: auto !important; max-width: 1008px; max-height: 360px !important; margin: 0 auto 24px; border-radius: 8px; box-shadow: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Race conditions, side by side</h1>
+  <p class="hint">The same search, written twice. A short query takes longer on the server, so the answer for "r" arrives after the answer for "rea". Both apps talk to the same fake server, with the same delays.</p>
+
+  <div class="script">
+    <input id="box" placeholder="type here, both apps get each keystroke" autocomplete="off">
+    <button class="primary" id="play">type "rea" fast</button>
+    <button id="clear">clear</button>
+  </div>
+
+  <div class="columns">
+    <div class="column" id="react">
+      <h2><span class="dot"></span>React 18, useEffect</h2>
+      <div id="react-root"></div>
+    </div>
+    <div class="column" id="reagera-column">
+      <h2><span class="dot"></span>Reagera, a request and a record</h2>
+      <div id="reagera"></div>
+      <div class="inside">
+        <section>
+          <h4>the code</h4>
+<pre>fn resolve(state, request, outcome, ctx) {
+    let used = request.query == state.query;
+    if used { state.results = outcome.names; }
+}</pre>
+          <p>The check is code that you write. Remove it, and Reagera has the same bug. The framework gives the check what it needs: the request and the state of this moment.</p>
+        </section>
+        <section>
+          <h4>after the race</h4>
+          <p>Each answer is a record, so the order of the race stays in the log. Move the timeline at the bottom of the page to see each moment. Reload the page: the URL rebuilds the same race. A test can answer in any order with no timers.</p>
+        </section>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script>
+  // ----- the fake server: the same as `search` and `delay_ms` in examples/race/src/lib.rs
+  const CATALOG = ["elm", "go", "preact", "python", "react", "reagera", "redux", "ruby", "rust", "svelte", "vue"];
+  const delayMs = q => [1800, 1800, 1200, 600][q.length] ?? 300;
+  const server = q => new Promise(done => setTimeout(() => done(CATALOG.filter(n => n.startsWith(q))), delayMs(q)));
+
+  // ----- the React half -------------------------------------------------------
+  const h = React.createElement;
+  let reactType = () => {};
+  let reactClear = () => {};
+
+  function SearchApp() {
+    const [query, setQuery] = React.useState("");
+    const [results, setResults] = React.useState([]);
+    const [resultsFor, setResultsFor] = React.useState("");
+    const [flying, setFlying] = React.useState(0);
+    const [answers, setAnswers] = React.useState([]); // for this page: React keeps no such list
+    const [guard, setGuard] = React.useState(false);
+    const guardRef = React.useRef(guard);
+    guardRef.current = guard;
+    reactType = setQuery;
+    reactClear = () => { setQuery(""); setResults([]); setResultsFor(""); setAnswers([]); };
+
+    React.useEffect(() => {
+      if (!query) { setResults([]); setResultsFor(""); return; }
+      let stale = false;
+      setFlying(n => n + 1);
+      server(query).then(names => {
+        const used = !(guardRef.current && stale);
+        setFlying(n => n - 1);
+        setAnswers(a => [...a, { query, count: names.length, stale, used }]);
+        if (used) { setResults(names); setResultsFor(query); }
+      });
+      return () => { stale = true; };
+    }, [query]);
+
+    const wrong = resultsFor !== "" && resultsFor !== query;
+    const app = h("div", { className: "app" },
+      h("input", { readOnly: true, placeholder: "the query", value: query }),
+      h("p", { className: "status" }, `${flying} in flight, list shows ${JSON.stringify(resultsFor)}`),
+      wrong && h("p", { className: "wrong" }, `The box says ${JSON.stringify(query)}, but the list shows ${JSON.stringify(resultsFor)}.`),
+      h("ul", { className: "list" }, results.map(name => h("li", { key: name }, name))),
+      h("table", { className: "answers" }, h("tbody", null,
+        h("tr", null, h("th", null, "answer for"), h("th", null, "names"), h("th", null, "result")),
+        answers.map((a, i) => h("tr", { key: i, className: !a.used ? "ignored" : a.stale ? "bad" : "used" },
+          h("td", null, JSON.stringify(a.query)), h("td", null, a.count),
+          h("td", null, !a.used ? "stale, ignored" : a.stale ? "stale, used" : "used"))))));
+
+    const inside = h("div", { className: "inside" },
+      h("section", null,
+        h("h4", null, "the code"),
+        h("pre", null, guard
+          ? "useEffect(() => {\n  let stale = false;\n  server(query).then(names => {\n    if (!stale) setResults(names);\n  });\n  return () => { stale = true; };\n}, [query]);"
+          : "useEffect(() => {\n  server(query).then(setResults);\n}, [query]);"),
+        h("p", null, guard
+          ? "With the cleanup flag, the screen is correct. This is the usual fix. You add it to each effect that fetches."
+          : "Nothing connects an answer to the current query, so the last answer to arrive wins. The code has no error, and a fast network hides the bug."),
+        h("label", null, h("input", { type: "checkbox", checked: guard, onChange: e => setGuard(e.target.checked) }), "add the cleanup flag")),
+      h("section", null,
+        h("h4", null, "after the race"),
+        h("p", null, "The screen shows only the last result. The order of the answers is gone, so a bug report says \"sometimes the list is wrong\". The table above exists because this page added it. Reload the page: this side starts empty. A test needs fake timers.")));
+
+    return h("div", null, app, inside);
+  }
+
+  ReactDOM.createRoot(document.getElementById("react-root")).render(h(SearchApp));
+</script>
+
+<script type="module">
+  import init, { type_query, clear } from "/pkg/race/reagera_example_race.js";
+  await init();
+
+  const box = document.getElementById("box");
+  const play = document.getElementById("play");
+  function send(text) {
+    reactType(text);
+    type_query(text);
+  }
+  function reset() {
+    box.value = "";
+    reactClear();
+    clear();
+  }
+  box.addEventListener("input", () => send(box.value));
+  document.getElementById("clear").addEventListener("click", reset);
+  play.addEventListener("click", async () => {
+    play.disabled = true;
+    reset();
+    for (const text of ["r", "re", "rea"]) {
+      box.value = text;
+      send(text);
+      await new Promise(r => setTimeout(r, 150));
+    }
+    await new Promise(r => setTimeout(r, 1700));
+    play.disabled = false;
+  });
+</script>
+</body>
+</html>
