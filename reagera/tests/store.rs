@@ -29,9 +29,9 @@ impl App for Counter {
     type Event = Msg;
     type State = State;
 
-    fn apply(state: &mut State, event: &Msg, at_ms: i64) {
-        state.applied.push(at_ms);
-        match event {
+    fn apply(state: &mut State, record: &Record<Msg>) {
+        state.applied.push(record.ms());
+        match record.body() {
             Msg::Reset => state.count = 0,
             Msg::Add(n) => state.count += n,
             Msg::Rename { label, .. } => state.label = label.clone(),
@@ -202,7 +202,7 @@ fn import_rejects_other_apps_and_garbage() {
         const NAME: &'static str = "other";
         type Event = Msg;
         type State = State;
-        fn apply(_: &mut State, _: &Msg, _: i64) {}
+        fn apply(_: &mut State, _: &Record<Msg>) {}
         fn view(_: &State, _: &Frame) -> Html<Msg> {
             div().build()
         }

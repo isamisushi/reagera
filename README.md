@@ -19,6 +19,34 @@ Because the log is the state, three things come for free:
 
 Live examples: https://reagera.fly.dev/
 
+## How Reagera differs from React
+
+React renders the current state. Reagera renders a point in a history. React keeps state in memory and replaces it on each update, so the previous state is gone unless you add a tool that records it. In Reagera, the history is the only source of truth, and the current state is one query against it.
+
+| Topic | React | Reagera |
+| --- | --- | --- |
+| Source of truth | Current state in components or a store | An ordered log of timestamped events |
+| Local state | `useState`, in any component | None. All state is in the log. |
+| Past states | Not kept. Redux DevTools can record them if you use Redux. | Always available through `state_at(ms)` and `backtrack(ms)` |
+| Order of updates | The order in which updates arrive | The time of each event, whatever the arrival order |
+| Late or duplicate events | Application code must handle them | The history inserts late events by time and ignores duplicates |
+| Reproducing a bug | Steps to reproduce, logs, or a session recording tool | The exported session rebuilds the same event log and the same states |
+| Testing | A DOM or a simulated DOM, usually jsdom | Views compile natively. No DOM is necessary. |
+| Language | JavaScript or TypeScript | Rust, compiled to WebAssembly |
+
+A bug report is the clearest difference. In React, you try to recreate the state from a description. In Reagera, the reporter sends the session text, and you import it in a test.
+
+The second difference is unreliable delivery. Reagera orders events by time, so several clients that receive the same events in a different order reach the same state. The result depends on deterministic `apply` functions and on the clocks of the clients. Reagera does not correct clock differences between clients.
+
+Reagera is not a replacement for React in most projects. Use React if you need any of these:
+
+- A large ecosystem of components, libraries, and developers
+- Server-side rendering or a framework such as Next.js
+- Keyed list reordering and concurrent rendering
+- A small download. Each Reagera example is about 100 KB of WebAssembly after gzip, in addition to its JavaScript bindings.
+
+Use Reagera if exact replay of a session is more important than these items, for example in collaborative tools, offline-first apps, or apps that have bugs that are difficult to reproduce. Reagera is an early project with two examples and no production use.
+
 ## What each dependency does
 
 | Crate | Role in Reagera |
@@ -30,7 +58,7 @@ Live examples: https://reagera.fly.dev/
 ## A complete app
 
 ```rust
-use reagera::{html::*, minbin, App, Frame, Html};
+use reagera::{html::*, minbin, App, Frame, Html, Record};
 
 // 1. The wire format of every event. This is the contract of the app.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -52,8 +80,8 @@ impl App for Counter {
     type Event = Msg;
     type State = State;
 
-    fn apply(state: &mut State, event: &Msg, _at_ms: i64) {
-        match event {
+    fn apply(state: &mut State, record: &Record<Msg>) {
+        match record.body() {
             Msg::Add(n) => state.count += n,
             Msg::Reset => state.count = 0,
         }

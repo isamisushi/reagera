@@ -1,6 +1,6 @@
 //! The contract an application implements.
 
-use crate::html::Html;
+use crate::{html::Html, record::Record};
 use minbin::ToFromBytes;
 use std::fmt::Debug;
 
@@ -29,8 +29,9 @@ pub trait App: 'static {
     /// The state. `Default` is the state before the first event.
     type State: Clone + Default + 'static;
 
-    /// Change the state for one event. Must be deterministic and must not panic.
-    fn apply(state: &mut Self::State, event: &Self::Event, at_ms: i64);
+    /// Change the state for one record. Must be deterministic and must not panic.
+    /// The record gives the event body and also its time, origin and content ID.
+    fn apply(state: &mut Self::State, record: &Record<Self::Event>);
 
     /// Describe the page for a state. Pure.
     fn view(state: &Self::State, frame: &Frame) -> Html<Self::Event>;

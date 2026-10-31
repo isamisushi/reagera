@@ -59,7 +59,7 @@ impl<A: App> ApplyEvents<Record<A::Event>> for Snap<A> {
     fn apply_events(&mut self, batch: ApplyBatch<'_, '_, Tick, Record<A::Event>>) {
         // ConTime hands over one complete tick at a time, in canonical order.
         for record in batch.events {
-            A::apply(&mut self.state, record.body(), record.ms());
+            A::apply(&mut self.state, record);
         }
     }
 }

@@ -34,41 +34,28 @@ pub struct State {
     pub placed: u32,
 }
 
-/// The app holds no view of its own: the lab draws two stores side by side.
+/// The lab draws two stores side by side, so the app has no view of its own.
 pub struct Arena;
 
 impl App for Arena {
-    const NAME: &'static str = "latency-lab/1";
+    const NAME: &'static str = "latency-lab/2";
     type Event = Msg;
     type State = State;
 
-    fn apply(state: &mut State, event: &Msg, _at_ms: i64) {
-        match event {
-            Msg::Place { .. } => {}
+    // ConTime calls this in canonical order and again after a late record, so
+    // `n` always shows the order the history settled on.
+    fn apply(state: &mut State, record: &Record<Msg>) {
+        match record.body() {
+            Msg::Place { x, y } => {
+                state.placed += 1;
+                state.dots.push(Dot { id: record.id(), x: *x, y: *y, n: state.placed, origin: record.origin().to_string() });
+            }
             Msg::Clear => state.dots.clear(),
         }
     }
 
     fn view(_: &State, _: &Frame) -> Html<Msg> {
         div().build()
-    }
-}
-
-// `apply` above cannot see the record's origin or id, which the dots need for
-// colour and identity. Records carry both, so the lab folds them itself through
-// a thin wrapper app that reads them from the record.
-pub struct ArenaWithIds;
-
-impl ArenaWithIds {
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    fn fold(state: &mut State, r: &Record<Msg>) {
-        match r.body() {
-            Msg::Place { x, y } => {
-                state.placed += 1;
-                state.dots.push(Dot { id: r.id(), x: *x, y: *y, n: state.placed, origin: r.origin().to_string() });
-            }
-            Msg::Clear => state.dots.clear(),
-        }
     }
 }
 
@@ -210,26 +197,20 @@ mod lab {
             }
         }
 
-        fn folded(store: &Store<Arena>, through_ms: i64) -> State {
-            let mut s = State::default();
-            for r in store.events().iter().filter(|r| r.ms() <= through_ms) {
-                ArenaWithIds::fold(&mut s, r);
-            }
-            s
-        }
-
         fn converged(&self) -> bool {
-            let a = Self::folded(&self.alice, i64::MAX);
-            a == Self::folded(&self.bob, i64::MAX) && a == Self::folded(&self.reference, i64::MAX)
+            self.alice.state() == self.bob.state() && self.alice.state() == self.reference.state()
         }
 
-        fn arena(&self, c: Client) -> Html<LabMsg> {
+        fn arena(&mut self, c: Client) -> Html<LabMsg> {
+            let through = self.scrub.unwrap_or(i64::MAX);
+            let state = match self.scrub {
+                Some(ms) => self.store(c).state_at(ms),
+                None => self.store(c).state().clone(),
+            };
             let store = match c {
                 Client::Alice => &self.alice,
                 Client::Bob => &self.bob,
             };
-            let through = self.scrub.unwrap_or(i64::MAX);
-            let state = Self::folded(store, through);
             let pending = self.in_flight.iter().filter(|m| m.to == c).count();
             let late: Vec<u128> = self.late.iter().filter(|(lc, _)| *lc == c).map(|(_, id)| *id).collect();
             let t0 = self.t0;
@@ -279,12 +260,14 @@ mod lab {
                 .build()
         }
 
-        fn view(&self) -> Html<LabMsg> {
+        fn view(&mut self) -> Html<LabMsg> {
             let latest = self.reference.latest_ms();
             let earliest = self.reference.earliest_ms();
             let inflight = self.in_flight.len();
             let converged = self.converged();
             let t0 = self.t0;
+            let alice = self.arena(Client::Alice);
+            let bob = self.arena(Client::Bob);
             main()
                 .child(h1().text("Latency lab"))
                 .child(p().class("hint").text(
@@ -325,9 +308,9 @@ mod lab {
                         )
                         .child(button().on_click(LabMsg::Live).text("live")),
                 )
-                .child(div().class("clients").child(self.arena(Client::Alice)).child(self.arena(Client::Bob)))
+                .child(div().class("clients").child(alice).child(bob))
                 .child(p().class("hint").text(format!(
-                    "reference store: {} events, {} bytes exported. Every record is a minbin-encoded ConTime event; the scrubber reads each client's log without moving its head.",
+                    "reference store: {} events, {} bytes exported. Every record is a minbin-encoded ConTime event. Each arena shows state rebuilt by ConTime, and the scrubber queries it at that time without moving the head.",
                     self.reference.events().len(),
                     self.reference.export().len()
                 )))
@@ -385,7 +368,7 @@ mod lab {
                 let scheduled = scheduled.clone();
                 next_frame(move || {
                     scheduled.set(false);
-                    let tree = lab.borrow().view();
+                    let tree = lab.borrow_mut().view();
                     if let Some(r) = renderer.borrow_mut().as_mut() {
                         r.render(tree);
                     }
@@ -402,7 +385,7 @@ mod lab {
             })
         };
         let mut first = Renderer::new(root, dispatch);
-        first.render(lab.borrow().view());
+        first.render(lab.borrow_mut().view());
         *renderer.borrow_mut() = Some(first);
 
         {
@@ -428,5 +411,50 @@ mod lab {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reagera::{Options, Store};
+
+    fn store(origin: &str, start: i64) -> Store<Arena> {
+        let mut t = start - 100;
+        Store::new(Options::default().origin(origin).clock(move || {
+            t += 100;
+            t
+        }))
+    }
+
+    #[test]
+    fn a_late_record_renumbers_the_dots_and_clients_converge() {
+        let mut alice = store("alice", 1000);
+        let mut bob = store("bob", 1050);
+        let a1 = alice.dispatch(Msg::Place { x: 1, y: 1 }); // 1000
+        let a2 = alice.dispatch(Msg::Place { x: 2, y: 2 }); // 1100
+        let b1 = bob.dispatch(Msg::Place { x: 3, y: 3 }); // 1050
+
+        assert_eq!(alice.state().dots.iter().map(|d| d.x).collect::<Vec<_>>(), vec![1, 2]);
+        alice.receive(b1.clone()); // late: older than a2
+        assert_eq!(alice.state().dots.iter().map(|d| (d.x, d.n)).collect::<Vec<_>>(), vec![(1, 1), (3, 2), (2, 3)]);
+
+        bob.receive(a2); // newest first
+        bob.receive(a1);
+        assert_eq!(alice.state(), bob.state());
+    }
+
+    #[test]
+    fn clear_applies_at_its_own_time() {
+        let mut alice = store("alice", 1000);
+        let mut bob = store("bob", 1150);
+        alice.dispatch(Msg::Place { x: 1, y: 1 }); // 1000
+        let clear = alice.dispatch(Msg::Clear); // 1100
+        let b1 = bob.dispatch(Msg::Place { x: 2, y: 2 }); // 1150
+        alice.receive(b1);
+        bob.receive(clear);
+        assert_eq!(alice.state().dots.iter().map(|d| d.x).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(bob.state().dots.iter().map(|d| d.x).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(alice.state_at(1000).dots.len(), 1);
     }
 }
