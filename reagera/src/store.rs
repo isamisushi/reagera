@@ -4,8 +4,8 @@
 //! tick, never by arrival order; a late record rebuilds the states after it;
 //! checkpoints keep queries cheap; the event list for export is a ConTime
 //! query. The store adds what a UI needs on top: an origin and a sequence
-//! counter, a monotonic dispatch time, a head that can look into the past, and
-//! sessions as minbin bytes.
+//! counter, a monotonic dispatch time, a head that can look into the past,
+//! the requests that still wait for an answer, and sessions as minbin bytes.
 //!
 //! Processing is Manual: no threads. Every operation enqueues work and then
 //! drains the worker on the calling thread, so results are available when the
@@ -14,7 +14,8 @@
 use crate::{
     app::{App, Frame},
     base64,
-    record::{Record, ROOT_HISTORY},
+    effect::{Body, Ctx, Pending, Rec},
+    record::ROOT_HISTORY,
     session::Session,
     tick::Tick,
 };
@@ -24,21 +25,24 @@ use contime::{
 };
 use std::{cell::RefCell, collections::HashSet, fmt, num::NonZeroUsize, rc::Rc};
 
-/// The ConTime snapshot: the app state plus the time it is valid at.
+/// The ConTime snapshot: the app state, the requests that have no answer yet,
+/// and the time both are valid at. Pending requests are part of the snapshot,
+/// so they are recomputed with the state after a late record or an import.
 pub struct Snap<A: App> {
     time: Tick,
     state: A::State,
+    pending: Vec<Pending<A::Effect>>,
 }
 
 impl<A: App> Clone for Snap<A> {
     fn clone(&self) -> Self {
-        Self { time: self.time, state: self.state.clone() }
+        Self { time: self.time, state: self.state.clone(), pending: self.pending.clone() }
     }
 }
 
 impl<A: App> Default for Snap<A> {
     fn default() -> Self {
-        Self { time: Tick::default(), state: A::State::default() }
+        Self { time: Tick::default(), state: A::State::default(), pending: Vec::new() }
     }
 }
 
@@ -52,20 +56,32 @@ impl<A: App> Snapshot for Snap<A> {
     }
 }
 
-impl<A: App> ApplyEvents<Record<A::Event>> for Snap<A> {
-    fn create(_snapshot_id: u128, _first: &Record<A::Event>) -> Self {
+impl<A: App> ApplyEvents<Rec<A>> for Snap<A> {
+    fn create(_snapshot_id: u128, _first: &Rec<A>) -> Self {
         Self::default()
     }
 
-    fn apply_events(&mut self, batch: ApplyBatch<'_, '_, Tick, Record<A::Event>>) {
+    fn apply_events(&mut self, batch: ApplyBatch<'_, '_, Tick, Rec<A>>) {
         // ConTime hands over one complete tick at a time, in canonical order.
         for record in batch.events {
-            A::apply(&mut self.state, record);
+            let mut ctx = Ctx::new(record);
+            match record.body() {
+                Body::Event(event) => A::apply(&mut self.state, event, &mut ctx),
+                Body::Reply { effect, request, outcome } => {
+                    // A reply settles its request once. A second reply to the
+                    // same request, or a reply to a request this fold never
+                    // emitted, changes nothing.
+                    let Some(pos) = self.pending.iter().position(|p| p.id == *effect) else { continue };
+                    self.pending.remove(pos);
+                    A::resolve(&mut self.state, request, outcome, &mut ctx);
+                }
+            }
+            self.pending.extend(ctx.finish());
         }
     }
 }
 
-type Engine<A> = RawManualConTime<Record<<A as App>::Event>, Snap<A>>;
+type Engine<A> = RawManualConTime<Rec<A>, Snap<A>>;
 
 /// How to build a store.
 pub struct Options {
@@ -103,6 +119,8 @@ pub enum StoreError {
     BadSession(String),
     /// The head is in the past. Time travel is read-only; call `go_live` to write.
     NotLive,
+    /// No request with this ID waits for an answer.
+    UnknownEffect(u128),
 }
 
 impl fmt::Display for StoreError {
@@ -110,6 +128,7 @@ impl fmt::Display for StoreError {
         match self {
             Self::BadSession(m) => write!(f, "bad session: {m}"),
             Self::NotLive => write!(f, "the head is in the past; go live before dispatching"),
+            Self::UnknownEffect(id) => write!(f, "no pending request #{}", crate::effect::short(*id)),
         }
     }
 }
@@ -140,7 +159,7 @@ pub struct Store<A: App> {
     seq: u32,
     head_ms: Option<i64>,
     clock: Box<dyn FnMut() -> i64>,
-    current: A::State,
+    current: Snap<A>,
     checkpoint_interval: u64,
     rejections: Vec<String>,
 }
@@ -159,7 +178,7 @@ impl<A: App> Store<A> {
             seq: 0,
             head_ms: None,
             clock,
-            current: A::State::default(),
+            current: Snap::default(),
             checkpoint_interval: options.checkpoint_interval,
             rejections: Vec::new(),
         }
@@ -204,21 +223,36 @@ impl<A: App> Store<A> {
 
     /// State at the head. Kept current by every mutating method.
     pub fn state(&self) -> &A::State {
-        &self.current
+        &self.current.state
+    }
+
+    /// Requests that had no answer as of the head, oldest first. Derived from
+    /// the history like the state, so a replayed session shows the same list.
+    pub fn pending(&self) -> &[Pending<A::Effect>] {
+        &self.current.pending
+    }
+
+    /// Requests that have no answer as of the newest record, whatever the head.
+    /// This is the list a runtime performs.
+    pub fn pending_live(&mut self) -> Vec<Pending<A::Effect>> {
+        if self.live() {
+            return self.current.pending.clone();
+        }
+        self.query_snap(self.latest.unwrap_or_default()).pending
     }
 
     /// What a view may know besides the state.
     pub fn frame(&self) -> Frame {
-        Frame { live: self.live(), head_ms: self.head_ms(), events: self.len() }
+        Frame { live: self.live(), head_ms: self.head_ms(), events: self.len(), pending: self.current.pending.len() }
     }
 
     /// Every retained record in canonical order, from the ConTime history.
-    pub fn events(&mut self) -> Vec<Record<A::Event>> {
+    pub fn events(&mut self) -> Vec<Rec<A>> {
         self.query_events(Tick::minimum(), Tick::end_of(i64::MAX))
     }
 
     /// Records with `from_ms < ms <= to_ms`, in canonical order.
-    pub fn events_between(&mut self, from_ms: i64, to_ms: i64) -> Vec<Record<A::Event>> {
+    pub fn events_between(&mut self, from_ms: i64, to_ms: i64) -> Vec<Rec<A>> {
         if to_ms <= from_ms {
             return Vec::new();
         }
@@ -232,7 +266,12 @@ impl<A: App> Store<A> {
 
     /// State at any time, including every event in that millisecond. Does not move the head.
     pub fn state_at(&mut self, ms: i64) -> A::State {
-        self.query_state(Tick::end_of(ms))
+        self.query_snap(Tick::end_of(ms)).state
+    }
+
+    /// Requests without an answer at any time. Does not move the head.
+    pub fn pending_at(&mut self, ms: i64) -> Vec<Pending<A::Effect>> {
+        self.query_snap(Tick::end_of(ms)).pending
     }
 
     /// What the ConTime worker reports.
@@ -245,32 +284,42 @@ impl<A: App> Store<A> {
 
     /// Record an event now. Returns the record so callers can share it.
     ///
-    /// The time is the clock's value, but never earlier than the newest record
-    /// this store knows, so a store's own records are ordered as they were made
-    /// and a reply to something it has seen is ordered after it.
+    /// The tick is the clock's value, but never earlier than the newest record
+    /// this store knows: the millisecond catches up, and within that
+    /// millisecond the sequence number catches up too, as a Lamport clock. So a
+    /// store's own records are ordered as they were made, and a reply to
+    /// something it has seen is ordered after it, whoever made it.
     ///
     /// Fails with [`StoreError::NotLive`] while the head is in the past: time
     /// travel is read-only, because other stores may hold the same history.
-    pub fn dispatch(&mut self, body: A::Event) -> Result<Record<A::Event>, StoreError> {
+    pub fn dispatch(&mut self, event: A::Event) -> Result<Rec<A>, StoreError> {
         if !self.live() {
             return Err(StoreError::NotLive);
         }
-        let ms = (self.clock)().max(self.latest_ms());
-        Ok(self.dispatch_at(body, ms))
+        let ms = self.next_ms();
+        Ok(self.dispatch_at(event, ms))
     }
 
     /// Record an event at an explicit millisecond, regardless of the head and the clock.
-    pub fn dispatch_at(&mut self, body: A::Event, ms: i64) -> Record<A::Event> {
-        let record = Record::new(ms, self.origin.clone(), self.seq, body);
-        self.seq += 1;
-        self.insert(record.clone());
-        self.refresh();
-        record
+    pub fn dispatch_at(&mut self, event: A::Event, ms: i64) -> Rec<A> {
+        self.record(Body::Event(event), ms)
+    }
+
+    /// Record the outside world's answer to a pending request. The request is
+    /// looked up among the requests without an answer as of the newest record.
+    ///
+    /// Unlike `dispatch`, this works while the head is in the past: an answer
+    /// is not a new branch of the history, it settles something already in it.
+    /// The head does not move.
+    pub fn reply(&mut self, effect: u128, outcome: A::Outcome) -> Result<Rec<A>, StoreError> {
+        let request = self.pending_live().into_iter().find(|p| p.id == effect).ok_or(StoreError::UnknownEffect(effect))?.request;
+        let ms = self.next_ms();
+        Ok(self.record(Body::Reply { effect, request, outcome }, ms))
     }
 
     /// Insert a record made elsewhere. Returns false when its ID is already known.
     /// A record older than the newest one is placed at its own tick and later state is rebuilt.
-    pub fn receive(&mut self, record: Record<A::Event>) -> bool {
+    pub fn receive(&mut self, record: Rec<A>) -> bool {
         if !self.insert(record) {
             return false;
         }
@@ -310,7 +359,7 @@ impl<A: App> Store<A> {
 
     /// Rebuild a store from `export` bytes.
     pub fn import(bytes: &[u8], options: Options) -> Result<Self, StoreError> {
-        let session: Session<A::Event> = minbin::from_bytes(bytes).map_err(|e| StoreError::BadSession(format!("{e:?}")))?;
+        let session: Session<Body<A::Event, A::Effect, A::Outcome>> = minbin::from_bytes(bytes).map_err(|e| StoreError::BadSession(format!("{e:?}")))?;
         if session.name != A::NAME {
             return Err(StoreError::BadSession(format!("session is for app {:?}, not {:?}", session.name, A::NAME)));
         }
@@ -334,7 +383,27 @@ impl<A: App> Store<A> {
 
     // ----- internals -----------------------------------------------------
 
-    fn insert(&mut self, record: Record<A::Event>) -> bool {
+    /// The clock's millisecond, but never earlier than the newest record this
+    /// store knows. Within that millisecond the sequence number catches up too.
+    fn next_ms(&mut self) -> i64 {
+        let ms = (self.clock)().max(self.latest_ms());
+        if let Some(latest) = self.latest {
+            if latest.ms == ms && self.seq <= latest.seq {
+                self.seq = latest.seq.saturating_add(1);
+            }
+        }
+        ms
+    }
+
+    fn record(&mut self, body: Body<A::Event, A::Effect, A::Outcome>, ms: i64) -> Rec<A> {
+        let record = Rec::<A>::new(ms, self.origin.clone(), self.seq, body);
+        self.seq += 1;
+        self.insert(record.clone());
+        self.refresh();
+        record
+    }
+
+    fn insert(&mut self, record: Rec<A>) -> bool {
         if !self.ids.insert(record.id()) {
             return false;
         }
@@ -363,12 +432,12 @@ impl<A: App> Store<A> {
         }
     }
 
-    fn query_state(&mut self, tick: Tick) -> A::State {
-        let slot: Rc<RefCell<Option<A::State>>> = Rc::new(RefCell::new(None));
+    fn query_snap(&mut self, tick: Tick) -> Snap<A> {
+        let slot: Rc<RefCell<Option<Snap<A>>>> = Rc::new(RefCell::new(None));
         let out = slot.clone();
         self.engine
             .query_at(tick, [ROOT_HISTORY], move |snaps| {
-                *out.borrow_mut() = snaps.into_iter().next().map(|s| s.state);
+                *out.borrow_mut() = snaps.into_iter().next().map(|s| *s);
             })
             .expect("manual queue has room");
         self.drain();
@@ -377,11 +446,11 @@ impl<A: App> Store<A> {
     }
 
     /// Records in the half-open tick interval `[from, to)`.
-    fn query_events(&mut self, from: Tick, to: Tick) -> Vec<Record<A::Event>> {
+    fn query_events(&mut self, from: Tick, to: Tick) -> Vec<Rec<A>> {
         if self.ids.is_empty() {
             return Vec::new();
         }
-        let slot: Rc<RefCell<Vec<Record<A::Event>>>> = Rc::new(RefCell::new(Vec::new()));
+        let slot: Rc<RefCell<Vec<Rec<A>>>> = Rc::new(RefCell::new(Vec::new()));
         let out = slot.clone();
         self.engine
             .query_events_between(ROOT_HISTORY, from, to, move |events| {
@@ -398,7 +467,7 @@ impl<A: App> Store<A> {
             Some(ms) => Tick::end_of(ms),
             None => self.latest.unwrap_or_default(),
         };
-        self.current = self.query_state(tick);
+        self.current = self.query_snap(tick);
     }
 }
 
@@ -424,13 +493,16 @@ fn wall_clock() -> i64 {
     js_sys::Date::now() as i64
 }
 
+/// Eight hex digits from the OS or browser random source. The clock is mixed in
+/// only as a fallback, so two tabs that start in the same millisecond still differ.
 fn random_origin(seed: i64) -> String {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut x = (seed as u64) ^ (u64::from(n) << 40) ^ 0x9e37_79b9_7f4a_7c15;
-    x ^= x >> 30;
-    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    x ^= x >> 27;
-    format!("{:08x}", (x >> 32) as u32)
+    let mut bytes = [0u8; 4];
+    if getrandom::fill(&mut bytes).is_err() {
+        let mut x = (seed as u64) ^ 0x9e37_79b9_7f4a_7c15;
+        x ^= x >> 30;
+        x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x ^= x >> 27;
+        bytes = ((x >> 32) as u32).to_be_bytes();
+    }
+    format!("{:08x}", u32::from_be_bytes(bytes))
 }

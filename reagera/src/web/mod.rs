@@ -40,6 +40,20 @@ pub fn every(ms: i32, f: impl FnMut() + 'static) -> i32 {
     id
 }
 
+/// Call `f` once after `ms` milliseconds.
+pub fn after(ms: i32, f: impl FnOnce() + 'static) {
+    let closure = Closure::once_into_js(f);
+    web_sys::window()
+        .expect("window")
+        .set_timeout_with_callback_and_timeout_and_arguments_0(closure.unchecked_ref(), ms)
+        .expect("setTimeout");
+}
+
+/// A number in `[0, 1)` from `Math.random()`. Not deterministic: record what you do with it.
+pub fn random() -> f64 {
+    js_sys::Math::random()
+}
+
 /// Log to the browser console.
 pub fn log(s: &str) {
     web_sys::console::log_1(&JsValue::from_str(s));

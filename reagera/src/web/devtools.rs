@@ -1,9 +1,11 @@
-//! The devtools panel: a timeline to scrub, the event list, export and import.
+//! The devtools panel: a timeline to scrub, pending requests, the event list,
+//! export and import.
 //! Everything it shows comes from the store's public API, so anything you can do
 //! here you can also do in a test.
 
 use crate::{
-    html::{button, div, input, li, ol, span, strong, text, textarea, Html},
+    effect::short,
+    html::{button, div, input, li, ol, span, strong, text, textarea, ul, Html},
     App, Options, Store,
 };
 
@@ -78,6 +80,8 @@ pub fn view<A: App>(store: &mut Store<A>, local: &DevState) -> Html<DevMsg> {
     let max = store.latest_ms().max(min + 1);
     let head = store.head_ms();
     let live = store.live();
+    let pending = store.pending().to_vec();
+    let mine = store.origin().to_string();
     div()
         .style(PANEL)
         .child(
@@ -85,6 +89,7 @@ pub fn view<A: App>(store: &mut Store<A>, local: &DevState) -> Html<DevMsg> {
                 .style("display:flex;gap:8px;align-items:center")
                 .child(strong().text("reagera"))
                 .child(span().text(format!("{} events", events.len())))
+                .child_if(!pending.is_empty(), || span().style("color:#fbbf24").text(format!("{} pending", pending.len())).build())
                 .child(span().attr("title", "ConTime worker: histories, pending, checkpoint spacing").text(format!("contime {}h {}p cp{}", status.histories, status.pending, status.checkpoint_interval)))
                 .child(span().style(if live { "margin-left:auto;color:#34d399" } else { "margin-left:auto;color:#fbbf24" }).text(if live { "LIVE".to_string() } else { format!("@ +{}ms", head - min) })),
         )
@@ -118,6 +123,14 @@ pub fn view<A: App>(store: &mut Store<A>, local: &DevState) -> Html<DevMsg> {
                 .on_input(DevMsg::ImportText),
         )
         .child_if(!local.error.is_empty(), || span().style("color:#f87171").text(local.error.clone()).build())
+        .child_if(!pending.is_empty(), || {
+            ul().style("margin:6px 0 0;padding-left:20px;color:#fbbf24")
+                .children(pending.iter().map(|p| {
+                    let who = if p.origin == mine { "waiting for the answer" } else { "another origin's, never performed here" };
+                    li().key(short(p.id)).attr("title", who).text(format!("+{}ms #{} {} {:?}", p.ms - min, short(p.id), p.origin, p.request)).build()
+                }))
+                .build()
+        })
         .child(ol().style("margin:6px 0 0;padding-left:20px").children(events.iter().map(|r| {
             let ms = r.ms();
             li().key(format!("{:x}", r.id()))

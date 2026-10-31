@@ -3,17 +3,18 @@
 //! Layout: magic `u32` "RGRA", version `u8`, app name, `live: bool`,
 //! `head_ms: i64`, then the records as a `Vec`. Nothing else. Record IDs are
 //! recomputed on import, so a session cannot carry a record whose ID disagrees
-//! with its content.
+//! with its content. Pending requests are not stored: they are derived from
+//! the records when the history is folded.
 
 use crate::{app::Wire, record::Record};
 use minbin::{BytesReader, BytesWriter, ToFromByteError, ToFromBytes};
 
 const MAGIC: u32 = 0x5247_5241;
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 
 /// The serializable form of a store.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Session<E> {
+pub struct Session<B> {
     /// `App::NAME` of the app that produced it.
     pub name: String,
     /// Whether the head followed the newest event.
@@ -21,10 +22,10 @@ pub struct Session<E> {
     /// Head millisecond when not live.
     pub head_ms: i64,
     /// Every retained record in canonical order.
-    pub records: Vec<Record<E>>,
+    pub records: Vec<Record<B>>,
 }
 
-impl<'a, E: Wire> ToFromBytes<'a> for Session<E> {
+impl<'a, B: Wire> ToFromBytes<'a> for Session<B> {
     const MAX_BYTES: usize = 64 * 1_048_576;
 
     fn to_bytes(&self, writer: &mut BytesWriter<'a>) -> Result<(), ToFromByteError> {

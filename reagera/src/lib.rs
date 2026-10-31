@@ -6,14 +6,19 @@
 //! encoded with minbin, so a whole session is a small, explicit byte string that
 //! reproduces the same states anywhere.
 //!
+//! Side effects go through the same log. `apply` emits a request; the runtime
+//! performs it once; the answer is a record. A replayed history meets the
+//! recorded answer and never performs the request again. See [`effect`].
+//!
 //! The crate has three layers:
-//! - [`Store`]: the history, the movable head, sessions. Native and wasm.
+//! - [`Store`]: the history, the movable head, pending requests, sessions. Native and wasm.
 //! - [`html`]: a virtual DOM description. Native and wasm, so views can be tested.
 //! - [`web`]: the renderer, the runtime and the devtools panel. wasm32 only.
 #![deny(missing_docs)]
 
 pub mod app;
 pub mod base64;
+pub mod effect;
 pub mod hash;
 pub mod html;
 pub mod record;
@@ -25,6 +30,7 @@ pub mod tick;
 pub mod web;
 
 pub use app::{App, Frame, Wire};
+pub use effect::{Body, Ctx, Done, Nothing, Pending, Rec};
 pub use html::{DomEvent, Element, Handler, Html};
 pub use record::Record;
 pub use store::{EngineStatus, Options, Store, StoreError};

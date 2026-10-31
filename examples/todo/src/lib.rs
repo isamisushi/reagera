@@ -2,7 +2,7 @@
 //! a ConTime history; the session lives in the URL hash, so the URL itself is
 //! the bug report.
 
-use reagera::{html::*, minbin, App, Frame, Html, Record};
+use reagera::{html::*, minbin, App, Ctx, Frame, Html, Nothing};
 
 /// 1. The wire format of every event. This is the whole contract of the app.
 /// A todo's id is the content ID of the record that added it, assigned in
@@ -48,12 +48,14 @@ impl App for TodoApp {
     const NAME: &'static str = "todo/1";
     type Event = Msg;
     type State = State;
+    type Effect = Nothing;
+    type Outcome = Nothing;
 
-    fn apply(state: &mut State, record: &Record<Msg>) {
-        match record.body() {
+    fn apply(state: &mut State, event: &Msg, ctx: &mut Ctx<Self>) {
+        match event {
             Msg::Add { title } => {
                 state.adds += 1;
-                state.todos.push(Todo { id: record.id(), title: title.clone(), done: false, created_ms: record.ms() });
+                state.todos.push(Todo { id: ctx.id(), title: title.clone(), done: false, created_ms: ctx.ms() });
             }
             Msg::Toggle(id) => {
                 if let Some(t) = state.todos.iter_mut().find(|t| t.id == *id) {

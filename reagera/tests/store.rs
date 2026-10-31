@@ -1,4 +1,4 @@
-use reagera::{html::*, minbin, App, Frame, Html, Options, Record, Store};
+use reagera::{html::*, minbin, App, Body, Ctx, Frame, Html, Nothing, Options, Record, Store};
 use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -28,10 +28,12 @@ impl App for Counter {
     const NAME: &'static str = "counter";
     type Event = Msg;
     type State = State;
+    type Effect = Nothing;
+    type Outcome = Nothing;
 
-    fn apply(state: &mut State, record: &Record<Msg>) {
-        state.applied.push(record.ms());
-        match record.body() {
+    fn apply(state: &mut State, event: &Msg, ctx: &mut Ctx<Self>) {
+        state.applied.push(ctx.ms());
+        match event {
             Msg::Reset => state.count = 0,
             Msg::Add(n) => state.count += n,
             Msg::Rename { label, .. } => state.label = label.clone(),
@@ -121,7 +123,7 @@ fn backtrack_shows_the_past_and_loses_nothing() {
     assert_eq!(s.state().count, 2);
     assert!(!s.live());
     assert_eq!(s.events().len(), 3);
-    assert_eq!(s.frame(), Frame { live: false, head_ms: 1010, events: 3 });
+    assert_eq!(s.frame(), Frame { live: false, head_ms: 1010, events: 3, pending: 0 });
     s.go_live();
     assert_eq!(s.state().count, 3);
 }
@@ -163,6 +165,33 @@ fn a_reply_is_ordered_after_what_was_seen() {
     assert_eq!(reply.ms(), 9000);
     assert_eq!(a.state().count, 0);
     assert_eq!(a.engine_status().histories, 1);
+}
+
+#[test]
+fn a_reply_is_ordered_after_what_was_seen_within_the_same_millisecond() {
+    // b has made several events, so its sequence numbers are ahead of a's.
+    // a's reply lands in b's millisecond and must sort after b's events there.
+    let mut a = store("a", 1000, 10);
+    let mut b = store("b", 9000, 0); // every event of b is at 9000
+    let add1 = b.dispatch(Msg::Add(1)).unwrap(); // 9000, seq 0
+    let add10 = b.dispatch(Msg::Add(10)).unwrap(); // 9000, seq 1
+    a.receive(add1);
+    a.receive(add10);
+    let reply = a.dispatch(Msg::Reset).unwrap();
+    assert_eq!((reply.ms(), reply.seq()), (9000, 2));
+    assert_eq!(a.state().count, 0, "reset applies after both adds it saw");
+    b.receive(reply);
+    assert_eq!(b.state().count, 0, "b agrees");
+    let later = a.dispatch(Msg::Add(3)).unwrap();
+    assert_eq!(later.seq(), 3, "a's own sequence stays monotonic after the jump");
+}
+
+#[test]
+fn origins_are_random_by_default() {
+    let one: Store<Counter> = Store::new(Options::default().clock(|| 42));
+    let two: Store<Counter> = Store::new(Options::default().clock(|| 42));
+    assert_eq!(one.origin().len(), 8);
+    assert_ne!(one.origin(), two.origin(), "same clock, different origins");
 }
 
 #[test]
@@ -240,7 +269,9 @@ fn import_rejects_other_apps_and_garbage() {
         const NAME: &'static str = "other";
         type Event = Msg;
         type State = State;
-        fn apply(_: &mut State, _: &Record<Msg>) {}
+        type Effect = Nothing;
+        type Outcome = Nothing;
+        fn apply(_: &mut State, _: &Msg, _: &mut Ctx<Self>) {}
         fn view(_: &State, _: &Frame) -> Html<Msg> {
             div().build()
         }
@@ -279,7 +310,7 @@ fn events_between_explains_a_range() {
         s.dispatch(Msg::Add(i)).unwrap();
     }
     let bodies: Vec<_> = s.events_between(1010, 1030).iter().map(|r| r.body().clone()).collect();
-    assert_eq!(bodies, vec![Msg::Add(2), Msg::Add(3)]);
+    assert_eq!(bodies, vec![Body::Event(Msg::Add(2)), Body::Event(Msg::Add(3))]);
     assert!(s.events_between(1030, 1010).is_empty());
     assert_eq!(s.events_between(i64::MIN, i64::MAX).len(), 5);
 }
@@ -293,6 +324,12 @@ fn record_bytes_are_explicit() {
     let back: Record<Msg> = minbin::from_bytes(&bytes).unwrap();
     assert_eq!(back, r);
     assert_eq!(back.id(), r.id());
+
+    // In a store the body is wrapped: tag u8 (0 event) then the event.
+    let mut s = store("a", 1, 1);
+    let r = s.dispatch(Msg::Add(3)).unwrap();
+    let bytes = minbin::to_bytes(&r).unwrap();
+    assert_eq!(bytes, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, b'a', 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 3]);
 }
 
 #[test]

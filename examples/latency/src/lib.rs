@@ -3,7 +3,7 @@
 //! order. ConTime inserts a late record at its own tick and rebuilds the states
 //! after it. When nothing is in flight, both clients and a reference store agree.
 
-use reagera::{html::*, minbin, App, Frame, Html, Record};
+use reagera::{html::*, minbin, App, Ctx, Frame, Html, Nothing};
 
 // ----- the app ---------------------------------------------------------------
 
@@ -41,14 +41,16 @@ impl App for Arena {
     const NAME: &'static str = "latency-lab/2";
     type Event = Msg;
     type State = State;
+    type Effect = Nothing;
+    type Outcome = Nothing;
 
     // ConTime calls this in canonical order and again after a late record, so
     // `n` always shows the order the history settled on.
-    fn apply(state: &mut State, record: &Record<Msg>) {
-        match record.body() {
+    fn apply(state: &mut State, event: &Msg, ctx: &mut Ctx<Self>) {
+        match event {
             Msg::Place { x, y } => {
                 state.placed += 1;
-                state.dots.push(Dot { id: record.id(), x: *x, y: *y, n: state.placed, origin: record.origin().to_string() });
+                state.dots.push(Dot { id: ctx.id(), x: *x, y: *y, n: state.placed, origin: ctx.origin().to_string() });
             }
             Msg::Clear => state.dots.clear(),
         }
@@ -65,6 +67,7 @@ impl App for Arena {
 mod lab {
     use super::*;
     use reagera::web::{every, next_frame, now_ms, Renderer};
+    use reagera::Rec;
     use reagera::{Options, Store};
     use std::{cell::RefCell, rc::Rc};
     use wasm_bindgen::prelude::*;
@@ -116,7 +119,7 @@ mod lab {
 
     struct InFlight {
         to: Client,
-        record: Record<Msg>,
+        record: Rec<Arena>,
         due_ms: i64,
     }
 
