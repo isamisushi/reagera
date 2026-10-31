@@ -2,7 +2,7 @@
 
 A front-end framework where the event log is the state. Rust, compiled to WebAssembly.
 
-Reagera (Swedish for "react") records every user action as a timestamped event in a
+Reagera records every user action as a timestamped event in a
 [ConTime](https://github.com/humacss/contime) history and encodes it with
 [minbin](https://github.com/humacss/minbin). The state you render is a fold over that
 history. Nothing else is the source of truth. This is the idea behind Amazon Aurora,
