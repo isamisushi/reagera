@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reagera latency lab</title>
+<style>
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #f3f4f6; color: #111827; }
+  main { max-width: 760px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-weight: 600; margin: 0 0 4px; }
+  .hint { color: #6b7280; font-size: 14px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 12px 0; font-size: 14px; }
+  .controls label { display: inline-flex; gap: 6px; align-items: center; }
+  .controls button, .scrub button { font: inherit; padding: 2px 10px; }
+  .status { padding: 6px 10px; border-radius: 6px; font-size: 14px; margin-bottom: 8px; }
+  .status.ok, .ok { background: #d1fae5; color: #065f46; }
+  .status.pending, .pending { background: #fef3c7; color: #92400e; }
+  header .ok, header .pending { padding: 0 6px; border-radius: 4px; }
+  .scrub { display: flex; gap: 8px; align-items: center; font-size: 14px; margin-bottom: 12px; }
+  .scrub input { flex: 1; }
+  .clients { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .clients { grid-template-columns: 1fr; } }
+  .client { background: #fff; border-radius: 8px; padding: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  .client header { display: flex; gap: 8px; font-size: 12px; color: #6b7280; margin-bottom: 6px; flex-wrap: wrap; }
+  .arena { width: 100%; height: auto; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; cursor: crosshair; }
+  .log { font: 11px/1.5 ui-monospace, Menlo, monospace; padding-left: 20px; margin: 8px 0 0; color: #374151; }
+  .log .late { color: #b45309; }
+  .log .future { opacity: .4; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/dist/examples/latency/app.js"></script>
+</body>
+</html>

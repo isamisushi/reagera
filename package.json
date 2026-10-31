@@ -1,0 +1,28 @@
+{
+  "name": "reagera",
+  "version": "0.1.0",
+  "description": "A front-end framework where the event log is the state. Query any moment, export a session as bytes, replay it exactly.",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./dom": "./dist/src/dom.js",
+    "./devtools": "./dist/src/devtools.js"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"dist/tests/**/*.test.js\"",
+    "example": "npm run build && node examples/serve.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}
